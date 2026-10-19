@@ -3,6 +3,12 @@
 [![Project Status: Beta](https://img.shields.io/badge/Status-Beta%20%2F%20Work%20in%20Progress-orange?style=flat&logo=git)](https://github.com/rafadono/KingdomHeartsChainOfMemoriesRecomp)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Project-FF5E5B?style=flat&logo=kofi&logoColor=white)](https://ko-fi.com/rafadono)
 
+> [!TIP]
+> **This branch (`android-thor-port`)** adds a personal dual-screen Android build for the AYN Thor:
+> the game on the top screen, a companion panel (deck, battle cards, floor map, Sora's status, touch)
+> on the bottom. See **[android/README.md: Session One](android/README.md)** for building, the
+> design, every game address used and how it was verified.
+
 > [!NOTE]
 > **Status: Beta / work in progress.** The game is playable end to end with the options below, which are covered by
 > automated tests (native C++ unit tests and a Python schema/algorithm suite) and by a headless capture harness.
