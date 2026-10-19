@@ -57,6 +57,77 @@ struct DeckSnapshot {
 };
 DeckSnapshot g_deck;
 
+// Battle card lists (USA), located through cardbattle_0 (0x08076CB4) and its Riku twin
+// (0x0807E910); CardBattleWork / CardSlot layout from the decompilation.
+constexpr uint32_t kCardBattleState = 0x02039DD4;  // CardBattleState* gCardBattleState
+constexpr uint32_t kStateSoraWork = 0x5C;          // CardBattleWork*
+constexpr uint32_t kStateRikuWork = 0x60;
+constexpr uint32_t kWorkSlots = 0x44;              // CardSlot* slots[4]
+constexpr uint32_t kWorkCursors = 0x94;            // u16 cursors[4]
+constexpr uint32_t kWorkSlotCounts = 0xA8;         // s16 slotCounts[4]
+constexpr uint32_t kWorkCardsLeft = 0xB0;          // s16 cardsLeft[4]
+constexpr uint32_t kWorkListIndex = 0xB8;          // s8
+constexpr uint32_t kWorkStockCount = 0xB9;         // u8
+constexpr uint32_t kSlotSize = 0xC;                // CardSlot: u32 cardId, u16 index, u8 pad,
+constexpr uint32_t kSlotPadding = 0x6;             //   u8 stocked, used, restoreOnReload, removed
+constexpr uint32_t kSlotStocked = 0x7;
+constexpr uint32_t kSlotUsed = 0x8;
+constexpr uint32_t kSlotRemoved = 0xA;
+constexpr int kMaxHandSlots = kDeckSlots + 15;     // main list: deck + Reload + padding
+constexpr uint32_t kHandEvery = 3;
+
+struct HandSnapshot {
+    bool valid = false;
+    int side = 0;                                  // 0 Sora, 1 Riku
+    int list = 0;                                  // 0 main, 1 magic, 2 item, 3 enemy
+    int cursor = -1;
+    int cards_left = 0;
+    int stock_count = 0;
+    int slots = 0;
+    // card ID | used << 16 | stocked << 17 | removed << 18
+    std::array<uint32_t, kMaxHandSlots> cards{};
+};
+HandSnapshot g_hand;
+
+bool in_ewram(uint32_t addr, uint32_t size = 4) {
+    return addr >= 0x02000000u && addr + size <= 0x02040000u;
+}
+
+// The work pointers outlive the battle, so this only runs while the battle flag is set and
+// validates every pointer and count before following it.
+void read_hand(HandSnapshot& h) {
+    h.valid = false;
+    h.slots = 0;
+    const uint32_t state = bus_read_u32(kCardBattleState);
+    if (!in_ewram(state, 0x10C)) return;
+    uint32_t work = bus_read_u32(state + kStateSoraWork);
+    h.side = 0;
+    if (!in_ewram(work, 0xCC)) {
+        work = bus_read_u32(state + kStateRikuWork);
+        h.side = 1;
+        if (!in_ewram(work, 0xCC)) return;
+    }
+    const int list = static_cast<int8_t>(bus_read_u8(work + kWorkListIndex));
+    if (list < 0 || list > 3) return;
+    const uint32_t slots = bus_read_u32(work + kWorkSlots + 4u * static_cast<uint32_t>(list));
+    const int count = static_cast<int16_t>(bus_read_u16(work + kWorkSlotCounts + 2u * static_cast<uint32_t>(list)));
+    if (count < 0 || count > kMaxHandSlots) return;
+    if (count > 0 && !in_ewram(slots, static_cast<uint32_t>(count) * kSlotSize)) return;
+    h.list = list;
+    h.cursor = bus_read_u16(work + kWorkCursors + 2u * static_cast<uint32_t>(list));
+    h.cards_left = static_cast<int16_t>(bus_read_u16(work + kWorkCardsLeft + 2u * static_cast<uint32_t>(list)));
+    h.stock_count = bus_read_u8(work + kWorkStockCount);
+    for (int i = 0; i < count; ++i) {
+        const uint32_t slot = slots + static_cast<uint32_t>(i) * kSlotSize;
+        if (bus_read_u8(slot + kSlotPadding) != 0) continue;   // spare slots after Reload
+        const uint32_t id = bus_read_u32(slot) & 0xFFFFu;
+        h.cards[h.slots++] = id | (bus_read_u8(slot + kSlotUsed) ? 1u << 16 : 0u) |
+                             (bus_read_u8(slot + kSlotStocked) ? 1u << 17 : 0u) |
+                             (bus_read_u8(slot + kSlotRemoved) ? 1u << 18 : 0u);
+    }
+    h.valid = true;
+}
+
 void read_deck(DeckSnapshot& d) {
     d.active = bus_read_u8(kActiveDeck);
     d.collection_count = bus_read_u16(kCardCount);
@@ -87,6 +158,8 @@ void on_poll() {
     g_battle = read_battle_context();
     for (int i = 0; i < g_watch_count; ++i) g_watch_values[i] = bus_read_u32(g_watch_addrs[i]);
     if (g_frame % kDeckEvery == 0) read_deck(g_deck);
+    if (g_battle != 1) g_hand.valid = false;
+    else if (g_frame % kHandEvery == 0) read_hand(g_hand);
 }
 
 } // namespace khcom::dual_screen
@@ -146,6 +219,31 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_deckSnapshot(JNIEnv* env, j
         buf[4] = g_deck.slots;
         for (int i = 0; i < g_deck.slots; ++i) buf[5 + i] = g_deck.cards[i];
         n = 5 + g_deck.slots;
+    }
+    const jsize cap = env->GetArrayLength(out);
+    if (n > cap) n = cap;
+    env->SetIntArrayRegion(out, 0, n, buf.data());
+    return n;
+}
+
+// Battle card list: out = [valid (0/1), side (0 Sora / 1 Riku), list (0 main, 1 magic,
+// 2 item, 3 enemy), cursor, cards left, stock count, n, n slots (card ID | used << 16 |
+// stocked << 17 | removed << 18; ID 0xFFFE is the Reload card)]; returns entries written.
+JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_handSnapshot(JNIEnv* env, jclass, jintArray out) {
+    if (!out) return 0;
+    std::array<jint, 7 + kMaxHandSlots> buf{};
+    int n;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        buf[0] = g_hand.valid ? 1 : 0;
+        buf[1] = g_hand.side;
+        buf[2] = g_hand.list;
+        buf[3] = g_hand.cursor;
+        buf[4] = g_hand.cards_left;
+        buf[5] = g_hand.stock_count;
+        buf[6] = g_hand.valid ? g_hand.slots : 0;
+        for (int i = 0; i < buf[6]; ++i) buf[7 + i] = static_cast<jint>(g_hand.cards[i]);
+        n = 7 + buf[6];
     }
     const jsize cap = env->GetArrayLength(out);
     if (n > cap) n = cap;

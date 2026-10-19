@@ -22,4 +22,12 @@ final class KhNative {
      * collection size, n, n card entries (ID | 0x8000 premium)]; returns count.
      */
     static native int deckSnapshot(int[] out);
+
+    /**
+     * Battle card list (only while in battle): out = [valid, side (0 Sora, 1 Riku),
+     * list (0 main, 1 magic, 2 item, 3 enemy), cursor, cards left, stock count, n,
+     * n slots (card ID | used << 16 | stocked << 17 | removed << 18)]; returns count.
+     * ID 0xFFFE is the Reload card.
+     */
+    static native int handSnapshot(int[] out);
 }

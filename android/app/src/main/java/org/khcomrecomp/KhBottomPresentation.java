@@ -29,7 +29,9 @@ import java.util.List;
  * Bottom-screen panel with two views, switched from the status bar:
  *
  * DECK (default) shows the equipped deck read live from guest RAM (see
- * src/android/dual_screen.cpp), coloured by card category.
+ * src/android/dual_screen.cpp), coloured by card category. During a battle it
+ * switches to the battle card list: selected card outlined, used cards dimmed,
+ * stocked cards marked.
  *
  * PAD shows GBA buttons as touch targets. They inject the keyboard keys that
  * keybinds.ini maps to each button, so input reaches the game through its normal
@@ -139,6 +141,10 @@ final class KhBottomPresentation extends Presentation {
         private int snapCount;
         private final int[] deck = new int[5 + 99];
         private int deckCount;
+        private final int[] hand = new int[7 + 99 + 15];
+        private int handCount;
+        private static final int RELOAD_ID = 0xFFFE;
+        private static final String[] LIST_NAMES = {"Cards", "Magic", "Items", "Enemy"};
         private final RectF tile = new RectF();
 
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -151,9 +157,11 @@ final class KhBottomPresentation extends Presentation {
                 try {
                     snapCount = KhNative.snapshot(snap);
                     deckCount = KhNative.deckSnapshot(deck);
+                    handCount = KhNative.handSnapshot(hand);
                 } catch (UnsatisfiedLinkError notYet) {
                     snapCount = 0;
                     deckCount = 0;
+                    handCount = 0;
                 }
                 invalidate();
                 postDelayed(this, 100);
@@ -221,6 +229,11 @@ final class KhBottomPresentation extends Presentation {
         private String statusLine() {
             String mode = "Booting";
             if (snapCount >= 2) mode = snap[1] == 1 ? "Battle" : snap[1] == 0 ? "Field" : "Booting";
+            if (handLive()) {
+                String list = hand[2] >= 0 && hand[2] < LIST_NAMES.length ? LIST_NAMES[hand[2]] : "?";
+                return String.format("Battle  \u00B7  %s  \u00B7  %s  \u00B7  %d left  \u00B7  Stock %d",
+                    hand[1] == 1 ? "Riku" : "Sora", list, hand[4], hand[5]);
+            }
             if (deckCount >= 5 && deck[0] >= 0 && deck[0] <= 2) {
                 return String.format("%s  ·  Deck %d  ·  %d cards  ·  %d CP",
                     mode, deck[0] + 1, deck[4], deck[1]);
@@ -235,7 +248,10 @@ final class KhBottomPresentation extends Presentation {
             text.setTextSize(u * 0.55f);
             canvas.drawText(statusLine(), u * 0.4f, bar / 2 - (text.descent() + text.ascent()) / 2, text);
             text.setTextAlign(Paint.Align.CENTER);
-            if (buttons == deckButtons) drawDeck(canvas, w, h, u, bar);
+            if (buttons == deckButtons) {
+                if (handLive()) drawHand(canvas, w, h, u, bar);
+                else drawDeck(canvas, w, h, u, bar);
+            }
             else drawWatches(canvas, w, u, bar);
             text.setTextSize(u * 0.55f);
             for (Button b : buttons) {
@@ -257,58 +273,113 @@ final class KhBottomPresentation extends Presentation {
             }
         }
 
-        /** The equipped deck as a grid of tiles, in deck order, sized to fit without scrolling. */
-        private void drawDeck(Canvas canvas, float w, float h, float u, float bar) {
-            int n = deckCount >= 5 ? Math.min(deck[4], deckCount - 5) : 0;
-            if (n == 0) {
-                text.setTextSize(u * 0.5f);
-                canvas.drawText(deckCount >= 5 ? "No deck equipped yet" : "Waiting for the game…",
-                    w / 2, (bar + h) / 2, text);
-                return;
-            }
-            float gap = u * 0.12f, top = bar + gap, avail = h - top - gap;
+        /** True while the game is in battle and a card list is readable. */
+        private boolean handLive() { return handCount >= 7 && hand[0] == 1; }
+
+        /** Columns and row height that fit n tiles under the bar without scrolling. */
+        private float layoutGrid(int n, float h, float u, float bar, int[] colsOut) {
+            float gap = u * 0.12f, avail = h - bar - 2 * gap;
             int cols = 3;
             float rowH = Math.min(u * 1.1f, avail / (float) Math.ceil(n / (double) cols));
             while (rowH < u * 0.55f && cols < 8) {
                 cols++;
                 rowH = Math.min(u * 1.1f, avail / (float) Math.ceil(n / (double) cols));
             }
-            float colW = (w - gap) / cols;
+            colsOut[0] = cols;
+            return rowH;
+        }
+
+        private final int[] cols = new int[1];
+
+        /** One card: category colour, value, name; gold edge for premium, white for selected. */
+        private void drawTile(Canvas canvas, int id, boolean premium, boolean selected, boolean dim,
+                              String badge, float u) {
+            float rr = tile.height() * 0.18f;
+            boolean reload = id == RELOAD_ID;
+            fill.setColor(reload ? 0xFF2E6E73 : categoryColor(KhCards.category(id)));
+            if (dim) fill.setAlpha(80);
+            canvas.drawRoundRect(tile, rr, rr, fill);
+            fill.setAlpha(255);
+            if (premium || selected) {
+                fill.setStyle(Paint.Style.STROKE);
+                fill.setStrokeWidth(Math.max(2f, tile.height() * (selected ? 0.12f : 0.06f)));
+                fill.setColor(selected ? Color.WHITE : 0xFFE8C45A);
+                canvas.drawRoundRect(tile, rr, rr, fill);
+                fill.setStyle(Paint.Style.FILL);
+            }
+            float ts = Math.min(tile.height() * 0.5f, u * 0.5f);
+            text.setTextSize(ts);
+            text.setAlpha(dim ? 110 : 255);
+            float ty = tile.centerY() - (text.descent() + text.ascent()) / 2;
+            int value = reload ? -1 : KhCards.value(id);
+            float nameX = tile.left + ts * 0.5f;
+            text.setTextAlign(Paint.Align.LEFT);
+            if (value >= 0) {
+                text.setFakeBoldText(true);
+                canvas.drawText(Integer.toString(value), tile.left + ts * 0.45f, ty, text);
+                text.setFakeBoldText(false);
+                nameX = tile.left + ts * 1.5f;
+            }
+            String name = reload ? "Reload" : KhCards.name(id);
+            float room = tile.right - nameX - ts * (badge != null ? 1.4f : 0.3f);
+            int fit = text.breakText(name, true, room, null);
+            canvas.drawText(fit < name.length() ? name.substring(0, Math.max(0, fit - 1)) + "\u2026" : name,
+                nameX, ty, text);
+            if (badge != null) {
+                text.setTextAlign(Paint.Align.RIGHT);
+                text.setColor(0xFFE8C45A);
+                canvas.drawText(badge, tile.right - ts * 0.35f, ty, text);
+                text.setColor(Color.WHITE);
+            }
+            text.setAlpha(255);
+            text.setTextAlign(Paint.Align.CENTER);
+        }
+
+        /** The equipped deck as a grid of tiles, in deck order. */
+        private void drawDeck(Canvas canvas, float w, float h, float u, float bar) {
+            int n = deckCount >= 5 ? Math.min(deck[4], deckCount - 5) : 0;
+            if (n == 0) {
+                text.setTextSize(u * 0.5f);
+                canvas.drawText(deckCount >= 5 ? "No deck equipped yet" : "Waiting for the game\u2026",
+                    w / 2, (bar + h) / 2, text);
+                return;
+            }
+            float gap = u * 0.12f, top = bar + gap;
+            float rowH = layoutGrid(n, h, u, bar, cols);
+            float colW = (w - gap) / cols[0];
             for (int i = 0; i < n; i++) {
                 int entry = deck[5 + i];
-                int id = entry & KhCards.ID_MASK;
-                float x = gap + (i % cols) * colW, y = top + (i / cols) * rowH;
+                float x = gap + (i % cols[0]) * colW, y = top + (i / cols[0]) * rowH;
                 tile.set(x, y, x + colW - gap, y + rowH - gap);
-                float rr = tile.height() * 0.18f;
-                fill.setColor(categoryColor(KhCards.category(id)));
-                canvas.drawRoundRect(tile, rr, rr, fill);
-                if ((entry & KhCards.PREMIUM) != 0) {
-                    fill.setStyle(Paint.Style.STROKE);
-                    fill.setStrokeWidth(Math.max(2f, rowH * 0.06f));
-                    fill.setColor(0xFFE8C45A);
-                    canvas.drawRoundRect(tile, rr, rr, fill);
-                    fill.setStyle(Paint.Style.FILL);
-                }
-                float ts = Math.min(tile.height() * 0.5f, u * 0.5f);
-                text.setTextSize(ts);
-                float ty = tile.centerY() - (text.descent() + text.ascent()) / 2;
-                int value = KhCards.value(id);
-                float nameX = tile.left + ts * 0.5f;
-                if (value >= 0) {
-                    text.setTextAlign(Paint.Align.LEFT);
-                    text.setFakeBoldText(true);
-                    canvas.drawText(Integer.toString(value), tile.left + ts * 0.45f, ty, text);
-                    text.setFakeBoldText(false);
-                    nameX = tile.left + ts * 1.5f;
-                }
-                text.setTextAlign(Paint.Align.LEFT);
-                String name = KhCards.name(id);
-                float room = tile.right - nameX - ts * 0.3f;
-                int fit = text.breakText(name, true, room, null);
-                canvas.drawText(fit < name.length() ? name.substring(0, Math.max(0, fit - 1)) + "…" : name,
-                    nameX, ty, text);
+                drawTile(canvas, entry & KhCards.ID_MASK, (entry & KhCards.PREMIUM) != 0, false, false, null, u);
             }
-            text.setTextAlign(Paint.Align.CENTER);
+        }
+
+        /**
+         * The battle card list in game order: the selected card outlined in white, used cards
+         * dimmed, stocked cards marked S. The list re-reads several times a second.
+         */
+        private void drawHand(Canvas canvas, float w, float h, float u, float bar) {
+            int n = Math.min(hand[6], handCount - 7);
+            if (n <= 0) {
+                text.setTextSize(u * 0.5f);
+                canvas.drawText("No cards in this list", w / 2, (bar + h) / 2, text);
+                return;
+            }
+            float gap = u * 0.12f, top = bar + gap;
+            float rowH = layoutGrid(n, h, u, bar, cols);
+            float colW = (w - gap) / cols[0];
+            int cursor = hand[3];
+            for (int i = 0; i < n; i++) {
+                int slot = hand[7 + i];
+                int id = slot & 0xFFFF;
+                boolean used = (slot & (1 << 16)) != 0, stocked = (slot & (1 << 17)) != 0;
+                boolean removed = (slot & (1 << 18)) != 0;
+                float x = gap + (i % cols[0]) * colW, y = top + (i / cols[0]) * rowH;
+                tile.set(x, y, x + colW - gap, y + rowH - gap);
+                drawTile(canvas, id == RELOAD_ID ? id : id & KhCards.ID_MASK, id != RELOAD_ID && (id & KhCards.PREMIUM) != 0,
+                    i == cursor, (used || removed) && !stocked, stocked ? "S" : null, u);
+            }
         }
 
         /** Pad view middle: guest RAM words from bottom_screen_watches.txt. */
