@@ -592,6 +592,11 @@ gbarecomp::RunOptions create_run_options() {
     opts.builtin_rom_sha1 = ROM_SHA1_USA.data();
     opts.launcher_region = "USA";
     opts.launcher_game_config = "game.toml";
+#if defined(__ANDROID__)
+    // The Android build drives touch from the bottom-screen panel (src/android/dual_screen.cpp);
+    // keep the engine's on-screen pad off the game image. Built-in controls still work.
+    opts.touch_pad_default = 0;
+#endif
 
     // Assist tools: save states, fast-forward, and rewind
     opts.expose_assist_tools = true;

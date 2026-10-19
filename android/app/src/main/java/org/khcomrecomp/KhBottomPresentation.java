@@ -555,8 +555,8 @@ final class KhBottomPresentation extends Presentation {
         }
 
         /**
-         * Cards picked up so far in this battle, newest last, along the bottom edge (the game
-         * adds them to the collection at pickup). Returns the height used, 0 when there are none.
+         * Cards picked up since the last battle started (battle rewards are collected in the
+         * field afterwards), newest last, along the bottom edge. Returns the height used.
          */
         private float drawPickups(Canvas canvas, float w, float h, float u) {
             int n = pickupCount >= 1 ? Math.min(pickups[0], pickupCount - 1) : 0;
@@ -566,7 +566,7 @@ final class KhBottomPresentation extends Presentation {
             float stripH = cardHgt + u * 0.5f, top = h - stripH;
             fill.setColor(art != null ? art.panelColour(0xA) : 0xFF262B4A);
             canvas.drawRect(0, top, w, top + Math.max(2f, s), fill);
-            float labelW = gameText(canvas, "Picked up", u * 0.3f, top + (stripH - 12 * s) / 2, s, -1, w / 3);
+            float labelW = gameText(canvas, "New cards", u * 0.3f, top + (stripH - 12 * s) / 2, s, -1, w / 3);
             float x = u * 0.6f + labelW, gap = u * 0.12f;
             int fit = Math.max(1, (int) ((w - x) / (cardW + gap)));
             for (int i = Math.max(0, n - fit); i < n; i++) {   // newest stay visible
@@ -593,7 +593,8 @@ final class KhBottomPresentation extends Presentation {
                 return;
             }
             float top = bar + u * 0.1f;
-            layoutCards(n, w, top, h, u);
+            float strip = drawPickups(canvas, w, h, u);   // rewards picked up after the last battle
+            layoutCards(n, w, top, h - strip, u);
             for (int i = 0; i < n; i++) {
                 int entry = deck[5 + i];
                 drawCard(canvas, i, top, u, entry & KhCards.ID_MASK, (entry & KhCards.PREMIUM) != 0,

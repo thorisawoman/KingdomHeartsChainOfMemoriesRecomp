@@ -124,15 +124,17 @@ void read_map(MapSnapshot& m) {
     }
 }
 
-// Cards picked up during a battle. ObtainCard (card drops in battle, boss prizes) writes each
-// new card into the first empty gCardCollection slot (0xFFF) at pickup time, so the slots that
-// fill in after the battle started are this battle's pickups.
+// Cards picked up since the last battle started. ObtainCard writes each new card into the first
+// empty gCardCollection slot (0xFFF) at pickup time. Battle rewards burst out AFTER the battle and
+// are collected in the field room (PrizeCard), so tracking runs all the time: a battle start takes
+// a new baseline and clears the list, and slots that fill in afterwards are the pickups.
 constexpr uint16_t kCollectionEmpty = 0xFFF;
 constexpr int kMaxPickups = 16;
 constexpr uint32_t kPickupEvery = 6;
 
 struct PickupTracker {
-    bool armed = false;                                  // baseline taken for this battle
+    bool armed = false;                                  // baseline taken
+    bool in_battle = false;
     std::array<uint16_t, kCollectionSize> base{};
     int count = 0;
     std::array<uint16_t, kMaxPickups> cards{};
@@ -140,22 +142,19 @@ struct PickupTracker {
 PickupTracker g_pickups;
 
 void track_pickups(PickupTracker& p, bool battle) {
-    if (!battle) {
-        p.armed = false;                                 // keep the list until the next battle
-        return;
-    }
-    if (!p.armed) {
+    const bool battle_started = battle && !p.in_battle;
+    p.in_battle = battle;
+    if (!p.armed || battle_started) {
         for (int i = 0; i < kCollectionSize; ++i) p.base[i] = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
         p.armed = true;
         p.count = 0;
         return;
     }
     for (int i = 0; i < kCollectionSize; ++i) {
-        if (p.base[i] != kCollectionEmpty) continue;
         const uint16_t now = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
-        if (now == kCollectionEmpty) continue;
-        p.base[i] = now;
-        if (p.count < kMaxPickups) p.cards[p.count++] = now;
+        if (p.base[i] == kCollectionEmpty && now != kCollectionEmpty && p.count < kMaxPickups)
+            p.cards[p.count++] = now;
+        p.base[i] = now;                                 // follow other edits (deck menu, removals)
     }
 }
 
@@ -232,7 +231,10 @@ void on_poll() {
         read_deck(g_deck);
         read_map(g_map);
     }
-    if (g_battle != 1 || g_frame % kPickupEvery == 0 || !g_pickups.armed) track_pickups(g_pickups, g_battle == 1);
+    // A battle start is caught on the first poll; otherwise scan a few times a second. Early boot
+    // (battle state unknown) waits, so the baseline is the loaded save, not uninitialised RAM.
+    if (g_battle >= 0 && ((g_battle == 1) != g_pickups.in_battle || g_frame % kPickupEvery == 0))
+        track_pickups(g_pickups, g_battle == 1);
     if (g_battle != 1) g_hand.valid = false;
     else if (g_frame % kHandEvery == 0) read_hand(g_hand);
 }
@@ -328,7 +330,7 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_handSnapshot(JNIEnv* env, j
     return n;
 }
 
-// Cards picked up in the current (or last) battle: out = [n, n collection entries
+// Cards picked up since the last battle started: out = [n, n collection entries
 // (card ID | 0x8000 premium)]; returns entries written.
 JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_pickupSnapshot(JNIEnv* env, jclass, jintArray out) {
     if (!out) return 0;
