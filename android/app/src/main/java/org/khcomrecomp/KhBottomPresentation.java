@@ -195,8 +195,9 @@ final class KhBottomPresentation extends Presentation {
                     mapCount = 0;
                     pickupCount = 0;
                 }
+                stepSelection();
                 invalidate();
-                postDelayed(this, handLive() ? 33 : 100);   // follow battles closely
+                postDelayed(this, handLive() || tapTarget >= 0 ? 33 : 100);   // follow battles closely
             }
         };
 
@@ -347,7 +348,10 @@ final class KhBottomPresentation extends Presentation {
                 cursorGlow.setEmpty();
             }
             if (handLive() && view != VIEW_PAD) drawHand(canvas, w, h, u, bar);   // battles always show cards
-            else if (view == VIEW_DECK) drawDeck(canvas, w, h, u, bar);
+            else if (view == VIEW_DECK) {
+                drawDeck(canvas, w, h, u, bar);
+                drawCloseup(canvas, w, h, u, bar);
+            }
             else if (view == VIEW_MAP) drawMap(canvas, w, h, u, bar);
             else drawWatches(canvas, w, u, bar);
             text.setTextSize(u * 0.55f);
@@ -583,8 +587,8 @@ final class KhBottomPresentation extends Presentation {
         }
 
         /**
-         * Cards picked up since the last battle started (battle rewards are collected in the
-         * field afterwards), newest last, along the bottom edge. Returns the height used.
+         * Recently picked-up cards (battle drops and rewards collected in the field), newest
+         * last, along the bottom edge. Returns the height used.
          */
         private float drawPickups(Canvas canvas, float w, float h, float u) {
             int n = pickupCount >= 1 ? Math.min(pickups[0], pickupCount - 1) : 0;
@@ -614,6 +618,7 @@ final class KhBottomPresentation extends Presentation {
 
         /** The equipped deck in deck order. */
         private void drawDeck(Canvas canvas, float w, float h, float u, float bar) {
+            deckShown = 0;
             int n = deckCount >= 5 ? Math.min(deck[4], deckCount - 5) : 0;
             if (n == 0) {
                 gameText(canvas, deckCount >= 5 ? "No deck equipped yet" : "Waiting for the game...",
@@ -621,8 +626,10 @@ final class KhBottomPresentation extends Presentation {
                 return;
             }
             float top = bar + u * 0.1f;
-            float strip = drawPickups(canvas, w, h, u);   // rewards picked up after the last battle
+            float strip = drawPickups(canvas, w, h, u);   // recent pickups
             layoutCards(n, w, top, h - strip, u);
+            deckTop = top;
+            deckShown = n;
             for (int i = 0; i < n; i++) {
                 int entry = deck[5 + i];
                 drawCard(canvas, i, top, u, entry & KhCards.ID_MASK, (entry & KhCards.PREMIUM) != 0,
@@ -785,6 +792,131 @@ final class KhBottomPresentation extends Presentation {
             pointerOwner.clear();
         }
 
+        // ---- Card taps ---------------------------------------------------------------------
+        // Battle: tapping a card selects it; the panel presses R / L (keybinds V / C) one step at a
+        // time until the game's own selection (sSoraSelectedCard) lands on it, so the game stays in
+        // charge. Tapping the selected card presses A to use it. Deck view: a tap shows a close-up.
+        private int tapTarget = -1, tapSteps;
+        private boolean tapRightIsNext = true, keyDown;
+        private int lastDistance = Integer.MAX_VALUE, heldKey;
+        private long keyUpAt, nextStepAt;
+        private int closeupId = -1;
+        private long closeupUntil;
+        private float deckTop;
+        private int deckShown;
+
+        private void tapCard(float x, float y) {
+            long now = android.os.SystemClock.uptimeMillis();
+            if (closeupId >= 0) {                         // any tap dismisses the close-up
+                closeupId = -1;
+                return;
+            }
+            if (handLive() && view != VIEW_PAD) {
+                int slot = handMotion.hit(x, y);
+                if (slot < 0) return;
+                if (slot == hand[3]) {
+                    tapTarget = -1;
+                    tapKey(KeyEvent.KEYCODE_X, now);          // A: use the selected card
+                } else {
+                    tapTarget = slot;
+                    tapSteps = 0;
+                    lastDistance = Integer.MAX_VALUE;
+                    nextStepAt = now;
+                }
+                performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);
+            } else if (view == VIEW_DECK && deckShown > 0) {
+                for (int i = 0; i < deckShown; i++) {
+                    cellRect(i, deckTop, unit(), card);
+                    if (card.contains(x, y)) {
+                        closeupId = deck[5 + i];
+                        closeupUntil = now + 4000;
+                        performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);
+                        return;
+                    }
+                }
+            }
+        }
+
+        private void tapKey(int key, long now) {
+            if (keyDown) SDLActivity.onNativeKeyUp(heldKey);
+            SDLActivity.onNativeKeyDown(key);
+            heldKey = key;
+            keyDown = true;
+            keyUpAt = now + 70;
+        }
+
+        /** Cards the L / R cycle visits, in slot order: not used or removed, plus Reload. */
+        private int ringPosition(int slot, int[] countOut) {
+            int n = Math.min(hand[6], handCount - 7), pos = -1, count = 0;
+            for (int i = 0; i < n; i++) {
+                int v = hand[7 + i];
+                boolean out = (v & ((1 << 16) | (1 << 17) | (1 << 18))) != 0;
+                if (out) continue;
+                if (i == slot) pos = count;
+                count++;
+            }
+            countOut[0] = count;
+            return pos;
+        }
+
+        private final int[] ringCount = new int[1];
+
+        private void stepSelection() {
+            long now = android.os.SystemClock.uptimeMillis();
+            if (keyDown && now >= keyUpAt) {
+                SDLActivity.onNativeKeyUp(heldKey);
+                keyDown = false;
+            }
+            if (tapTarget < 0 || keyDown || now < nextStepAt) return;
+            if (!handLive() || tapSteps > 40) {
+                tapTarget = -1;
+                return;
+            }
+            int sel = hand[3];
+            if (sel == tapTarget) {
+                tapTarget = -1;
+                return;
+            }
+            int t = ringPosition(tapTarget, ringCount), p = ringPosition(sel, ringCount), n = ringCount[0];
+            if (t < 0 || p < 0 || n == 0) {
+                tapTarget = -1;
+                return;
+            }
+            int forward = ((t - p) % n + n) % n;
+            int distance = Math.min(forward, n - forward);
+            if (distance > lastDistance) tapRightIsNext = !tapRightIsNext;   // learned the cycle direction
+            lastDistance = distance;
+            boolean goForward = forward <= n - forward;
+            int key = goForward == tapRightIsNext ? KeyEvent.KEYCODE_V : KeyEvent.KEYCODE_C;   // R : L
+            tapKey(key, now);
+            tapSteps++;
+            nextStepAt = now + 150;                         // let the game turn the ring
+        }
+
+        /** Deck-view close-up of a tapped card: big card art, name and value. */
+        private void drawCloseup(Canvas canvas, float w, float h, float u, float bar) {
+            long now = android.os.SystemClock.uptimeMillis();
+            if (closeupId < 0) return;
+            if (now > closeupUntil || view != VIEW_DECK || handLive()) {
+                closeupId = -1;
+                return;
+            }
+            fill.setColor(0xC0000000);
+            canvas.drawRect(0, bar, w, h, fill);
+            int id = closeupId & KhCards.ID_MASK;
+            float ch = (h - bar) * 0.62f, cw = ch * KhRomArt.WIDTH / KhRomArt.HEIGHT;
+            float top = bar + (h - bar - ch) * 0.3f;
+            card.set(w / 2 - cw / 2, top, w / 2 + cw / 2, top + ch);
+            drawGlow(canvas, card, 0x55FFFFFF);
+            drawCardRect(canvas, card, u, id, (closeupId & KhCards.PREMIUM) != 0, 255, null, false);
+            int s = gbaScale();
+            int value = KhCards.value(id);
+            String line = KhCards.name(id) + (value >= 0 ? "  " + value : "")
+                + ((closeupId & KhCards.PREMIUM) != 0 ? "  \u2605" : "");
+            gameText(canvas, line, w / 2, card.bottom + u * 0.3f, s, 0, w - u);
+            animating = true;
+        }
+
         @Override
         public boolean onTouchEvent(MotionEvent e) {
             switch (e.getActionMasked()) {
@@ -811,8 +943,11 @@ final class KhBottomPresentation extends Presentation {
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_POINTER_UP: {
-                    int id = e.getPointerId(e.getActionIndex());
-                    release(pointerOwner.get(id));
+                    int i = e.getActionIndex();
+                    int id = e.getPointerId(i);
+                    Button was = pointerOwner.get(id);
+                    if (was == null && pointerOwner.indexOfKey(id) >= 0) tapCard(e.getX(i), e.getY(i));
+                    release(was);
                     pointerOwner.remove(id);
                     break;
                 }

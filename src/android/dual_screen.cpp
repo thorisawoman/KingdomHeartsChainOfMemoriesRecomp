@@ -64,7 +64,6 @@ DeckSnapshot g_deck;
 // Battle card lists (USA), located through cardbattle_0 (0x08076CB4) and its Riku twin
 // (0x0807E910); CardBattleWork / CardSlot layout from the decompilation.
 constexpr uint32_t kCardBattleState = 0x02039DD4;  // CardBattleState* gCardBattleState
-constexpr uint32_t kStateSoraWork = 0x5C;          // CardBattleWork*
 constexpr uint32_t kStateRikuWork = 0x60;
 constexpr uint32_t kWorkSlots = 0x44;              // CardSlot* slots[4]
 constexpr uint32_t kWorkCursors = 0x94;            // u16 cursors[4]
@@ -79,6 +78,16 @@ constexpr uint32_t kSlotUsed = 0x8;
 constexpr uint32_t kSlotRemoved = 0xA;
 constexpr int kMaxHandSlots = kDeckSlots + 15;     // main list: deck + Reload + padding
 constexpr uint32_t kHandEvery = 3;
+// gCardBattleState->soraWork is not usable: cardbattle_0 stores the work pointer before
+// CreateCardBattleState allocates (and zeroes) the state, so the live state never has it. The
+// selected card's display work does: sSoraSelectedCard (static in card_battle.c, located from its
+// 79 literal uses there and checked against live memory) -> CardDisplayArgs { ListPool* pool
+// (= &work->cardDisplays[list]), CardSlot* slot, variant, u16 index, u8 listIndex }.
+constexpr uint32_t kSoraSelectedCard = 0x02034A98;  // CardDisplayWork*
+constexpr uint32_t kDisplayArgsPool = 0x38;          // ListPool*
+constexpr uint32_t kDisplayArgsIndex = 0x44;         // u16 selected slot
+constexpr uint32_t kDisplayArgsList = 0x46;          // u8
+constexpr uint32_t kWorkCardDisplays = 0x54;         // ListPool cardDisplays[4], 0x10 each
 
 struct HandSnapshot {
     bool valid = false;
@@ -124,37 +133,38 @@ void read_map(MapSnapshot& m) {
     }
 }
 
-// Cards picked up since the last battle started. ObtainCard writes each new card into the first
-// empty gCardCollection slot (0xFFF) at pickup time. Battle rewards burst out AFTER the battle and
-// are collected in the field room (PrizeCard), so tracking runs all the time: a battle start takes
-// a new baseline and clears the list, and slots that fill in afterwards are the pickups.
+// Cards picked up recently (rolling, newest last). ObtainCard writes each new card into the first
+// empty gCardCollection slot (0xFFF) at pickup time, in battle or in the field (battle rewards are
+// collected in the room afterwards), so a slot that fills in is a pickup. The baseline follows the
+// collection continuously, so deck-menu edits and removals are absorbed.
 constexpr uint16_t kCollectionEmpty = 0xFFF;
 constexpr int kMaxPickups = 16;
 constexpr uint32_t kPickupEvery = 6;
 
 struct PickupTracker {
     bool armed = false;                                  // baseline taken
-    bool in_battle = false;
     std::array<uint16_t, kCollectionSize> base{};
     int count = 0;
     std::array<uint16_t, kMaxPickups> cards{};
 };
 PickupTracker g_pickups;
 
-void track_pickups(PickupTracker& p, bool battle) {
-    const bool battle_started = battle && !p.in_battle;
-    p.in_battle = battle;
-    if (!p.armed || battle_started) {
+void track_pickups(PickupTracker& p) {
+    if (!p.armed) {
         for (int i = 0; i < kCollectionSize; ++i) p.base[i] = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
         p.armed = true;
-        p.count = 0;
         return;
     }
     for (int i = 0; i < kCollectionSize; ++i) {
         const uint16_t now = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
-        if (p.base[i] == kCollectionEmpty && now != kCollectionEmpty && p.count < kMaxPickups)
+        if (p.base[i] == kCollectionEmpty && now != kCollectionEmpty) {
+            if (p.count == kMaxPickups) {                // drop the oldest
+                for (int k = 1; k < kMaxPickups; ++k) p.cards[k - 1] = p.cards[k];
+                --p.count;
+            }
             p.cards[p.count++] = now;
-        p.base[i] = now;                                 // follow other edits (deck menu, removals)
+        }
+        p.base[i] = now;
     }
 }
 
@@ -167,11 +177,22 @@ bool in_ewram(uint32_t addr, uint32_t size = 4) {
 void read_hand(HandSnapshot& h) {
     h.valid = false;
     h.slots = 0;
-    const uint32_t state = bus_read_u32(kCardBattleState);
-    if (!in_ewram(state, 0x10C)) return;
-    uint32_t work = bus_read_u32(state + kStateSoraWork);
+    uint32_t work = 0;
+    int selected = -1;
     h.side = 0;
+    const uint32_t display = bus_read_u32(kSoraSelectedCard);
+    if (in_ewram(display, 0xA8)) {
+        const uint32_t pool = bus_read_u32(display + kDisplayArgsPool);
+        const int dlist = bus_read_u8(display + kDisplayArgsList);
+        if (dlist <= 3 && in_ewram(pool, 0x10)) {
+            work = pool - kWorkCardDisplays - 0x10u * static_cast<uint32_t>(dlist);
+            selected = bus_read_u16(display + kDisplayArgsIndex);
+        }
+    }
     if (!in_ewram(work, 0xCC)) {
+        // Riku's battles keep their own selected-card static; try the state's pointers.
+        const uint32_t state = bus_read_u32(kCardBattleState);
+        if (!in_ewram(state, 0x10C)) return;
         work = bus_read_u32(state + kStateRikuWork);
         h.side = 1;
         if (!in_ewram(work, 0xCC)) return;
@@ -183,7 +204,7 @@ void read_hand(HandSnapshot& h) {
     if (count < 0 || count > kMaxHandSlots) return;
     if (count > 0 && !in_ewram(slots, static_cast<uint32_t>(count) * kSlotSize)) return;
     h.list = list;
-    h.cursor = bus_read_u16(work + kWorkCursors + 2u * static_cast<uint32_t>(list));
+    h.cursor = selected >= 0 ? selected : bus_read_u16(work + kWorkCursors + 2u * static_cast<uint32_t>(list));
     h.cards_left = static_cast<int16_t>(bus_read_u16(work + kWorkCardsLeft + 2u * static_cast<uint32_t>(list)));
     h.stock_count = bus_read_u8(work + kWorkStockCount);
     for (int i = 0; i < count; ++i) {
@@ -231,10 +252,8 @@ void on_poll() {
         read_deck(g_deck);
         read_map(g_map);
     }
-    // A battle start is caught on the first poll; otherwise scan a few times a second. Early boot
-    // (battle state unknown) waits, so the baseline is the loaded save, not uninitialised RAM.
-    if (g_battle >= 0 && ((g_battle == 1) != g_pickups.in_battle || g_frame % kPickupEvery == 0))
-        track_pickups(g_pickups, g_battle == 1);
+    // Early boot (battle state unknown) waits, so the baseline is the loaded save, not uninitialised RAM.
+    if (g_battle >= 0 && g_frame % kPickupEvery == 0) track_pickups(g_pickups);
     if (g_battle != 1) g_hand.valid = false;
     else if (g_frame % kHandEvery == 0) read_hand(g_hand);
 }
@@ -330,7 +349,7 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_handSnapshot(JNIEnv* env, j
     return n;
 }
 
-// Cards picked up since the last battle started: out = [n, n collection entries
+// Recently picked-up cards, newest last: out = [n, n collection entries
 // (card ID | 0x8000 premium)]; returns entries written.
 JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_pickupSnapshot(JNIEnv* env, jclass, jintArray out) {
     if (!out) return 0;

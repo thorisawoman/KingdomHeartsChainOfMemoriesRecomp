@@ -39,7 +39,7 @@ final class KhNative {
     static native int mapSnapshot(int[] out);
 
     /**
-     * Cards picked up since the last battle started: out = [n, n entries
+     * Recently picked-up cards, newest last (rolling 16): out = [n, n entries
      * (card ID | 0x8000 premium)]; returns count.
      */
     static native int pickupSnapshot(int[] out);

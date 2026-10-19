@@ -122,6 +122,15 @@ final class KhHandAnimator {
 
     Sprite get(int slot) { return sprites.get(slot); }
 
+    /** Slot of the visible card under (x, y), or -1. */
+    int hit(float x, float y) {
+        for (int i = sprites.size() - 1; i >= 0; i--) {
+            Sprite s = sprites.valueAt(i);
+            if (s.visible && s.rect.contains(x, y)) return s.slot;
+        }
+        return -1;
+    }
+
     /** Eases every visible sprite toward its target; call once per frame after targets are set. */
     void step(long now) {
         float dt = lastStep == 0 ? 0.016f : Math.min(0.1f, (now - lastStep) / 1000f);
