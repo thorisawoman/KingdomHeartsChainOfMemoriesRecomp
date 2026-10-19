@@ -62,7 +62,14 @@ final class KhRomArt {
     private static final int[] ROOM_SHAPE_ORDER = {0, 4, 2, 5, 3, 10, 9, 13, 1, 7, 8, 11, 6, 14, 12, 15};
     private static final int[][] ROOM_STEP = {{1, -1}, {-1, 1}, {1, 1}, {-1, -1}};   // UR, DL, DR, UL
     private static final int ROOM_NONE = 0xFF, ROOM_EXIT_HALL = 0xFD, ROOM_ENTRANCE_HALL = 0xFE;
-    static final int FLOOR_ROOM_VISITED = 0x2, FLOOR_ROOM_LOCKED = 0x4, FLOOR_ROOM_EVENT_DONE = 0x8;
+    static final int FLOOR_ROOM_CREATED = 0x1, FLOOR_ROOM_VISITED = 0x2, FLOOR_ROOM_LOCKED = 0x4,
+        FLOOR_ROOM_EVENT_DONE = 0x8;
+    // Door markers (SetupAllmapRoomDoors): 16 frames = 4 corners x 4 animation steps, 8 frames each;
+    // side UR/DL/DR/UL uses animation 1/2/3/0 (sAllmapRoomDirs). Tile data follows the 248-byte
+    // frame/animation records of each sheet.
+    private static final int CLOSED_DOOR_FRAMES = 0x09EF654C, CLOSED_DOOR_TILES = 0x0976E3DC + 248;
+    private static final int HALL_DOOR_FRAMES = 0x09EF64FC, HALL_DOOR_TILES = 0x0976DDE4 + 248;
+    private static final int[] DOOR_ANIM_FOR_SIDE = {1, 2, 3, 0};
     private static final int EVENT_ROOM = 1, EVENT_HIDDEN_CHAMBER = 2, EVENT_BOSS_ROOM = 4, EVENT_END = 5;
     /** Room cell spacing and size in GBA pixels. */
     static final int ROOM_STEP_PX = 24, ROOM_SIZE_PX = 32;
@@ -283,10 +290,11 @@ final class KhRomArt {
      * (SetupAllmapRoomDoors), palette from its state (AllmapDrawRoomTiles); the current room
      * cycles through room palettes 2-4 with phase. roomFlags are the 32 MapFloorRoom flags.
      */
-    synchronized Bitmap floorMap(FloorLayout f, int[] roomFlags, int current, int phase) {
+    synchronized Bitmap floorMap(FloorLayout f, int[] roomFlags, int current, int phase, int doorStep) {
         try {
             int w = f.width(), h = f.height();
             int[] px = new int[w * h];
+            java.util.List<int[]> doors = new java.util.ArrayList<>();   // {frames, tiles, ox, oy, bank, side}
             for (int parity = 0; parity < 2; parity++) {
                 for (int room = 0; room < 32; room++) {
                     if (f.x[room] < 0 || (f.x[room] & 1) != parity) continue;
@@ -310,6 +318,16 @@ final class KhRomArt {
                     }
                     int[] colours = mapPalette(bank);
                     int ox = (f.x[room] - f.minX) * ROOM_STEP_PX, oy = (f.y[room] - f.minY) * ROOM_STEP_PX;
+                    if (visited && shape != 17) {
+                        for (int side = 0; side < 4; side++) {
+                            if (!doorExists(f, roomFlags, room, side)) continue;
+                            int n = f.links[room * 4 + side];
+                            if (n == ROOM_EXIT_HALL || n == ROOM_ENTRANCE_HALL)
+                                doors.add(new int[] {HALL_DOOR_FRAMES, HALL_DOOR_TILES, ox, oy, bank, side});
+                            else if (n < 32 && (roomFlags[n] & FLOOR_ROOM_CREATED) == 0)
+                                doors.add(new int[] {CLOSED_DOOR_FRAMES, CLOSED_DOOR_TILES, ox, oy, bank, side});
+                        }
+                    }
                     for (int t = 0; t < 16; t++) {
                         int tile = ROOM_TILES + 32 * (shape * 16 + t);
                         for (int py = 0; py < 8; py++) {
@@ -322,10 +340,62 @@ final class KhRomArt {
                     }
                 }
             }
+            for (int[] d : doors) {                       // sprites over the room layer
+                int frame = u32(d[0] + 4 * (DOOR_ANIM_FOR_SIDE[d[5]] * 4 + (doorStep & 3)));
+                drawFrameAt(px, w, h, frame, d[1], mapPalette(d[4]), d[2], d[3]);
+            }
             return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
         } catch (IOException | RuntimeException bad) {
             return null;
         }
+    }
+
+    /** Draws a sprite frame with its origin at (ox, oy) into a w x h pixel buffer. */
+    private void drawFrameAt(int[] px, int w, int h, int frame, int tiles, int[] colours, int ox, int oy)
+            throws IOException {
+        int pieces = u16(frame);
+        if (pieces > 32) throw new IOException("bad frame");
+        for (int p = 0; p < pieces; p++) {
+            int a0 = u16(frame + 2 + 6 * p), a1 = u16(frame + 4 + 6 * p), a2 = u16(frame + 6 + 6 * p);
+            int shape = a0 >>> 14, size = a1 >>> 14;
+            if (shape > 2) continue;
+            int pw = SHAPES[shape][size * 2], ph = SHAPES[shape][size * 2 + 1];
+            int x = a1 & 0x1FF, y = a0 & 0xFF;
+            if ((x & 0x100) != 0) x -= 512;
+            if ((y & 0x80) != 0) y -= 256;
+            boolean hflip = ((a1 >> 12) & 1) != 0, vflip = ((a1 >> 13) & 1) != 0;
+            int first = a2 & 0x3FF, tw = pw / 8;
+            for (int ty = 0; ty < ph / 8; ty++)
+                for (int tx = 0; tx < tw; tx++)
+                    for (int py = 0; py < 8; py++)
+                        for (int qx = 0; qx < 8; qx++) {
+                            int b8 = u8(tiles + 32 * (first + ty * tw + tx) + py * 4 + qx / 2);
+                            int v = (qx & 1) != 0 ? b8 >> 4 : b8 & 15;
+                            if (v == 0) continue;
+                            int sx = tx * 8 + qx, sy = ty * 8 + py;
+                            if (hflip) sx = pw - 1 - sx;
+                            if (vflip) sy = ph - 1 - sy;
+                            int X = ox + x + sx, Y = oy + y + sy;
+                            if (X >= 0 && X < w && Y >= 0 && Y < h) px[Y * w + X] = colours[v];
+                        }
+        }
+    }
+
+    /** Room index whose cell contains (x, y) in floor-map pixels, or -1. */
+    static int roomAt(FloorLayout f, float x, float y) {
+        int best = -1;
+        float bestD = ROOM_SIZE_PX * 0.55f;
+        for (int room = 0; room < 32; room++) {
+            if (f.x[room] < 0) continue;
+            float cx = (f.x[room] - f.minX) * ROOM_STEP_PX + ROOM_SIZE_PX / 2f;
+            float cy = (f.y[room] - f.minY) * ROOM_STEP_PX + ROOM_SIZE_PX / 2f;
+            float d = Math.abs(x - cx) + Math.abs(y - cy);   // diamond-shaped rooms
+            if (d < bestD) {
+                bestD = d;
+                best = room;
+            }
+        }
+        return best;
     }
 
     private int[] mapPalette(int bank) throws IOException {

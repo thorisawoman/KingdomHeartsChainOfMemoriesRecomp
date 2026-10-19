@@ -158,7 +158,7 @@ final class KhBottomPresentation extends Presentation {
         private final RectF cursorGlow = new RectF();
         private boolean animating;
         private final int[] pickups = new int[1 + 16];
-        private final int[] status = new int[9];
+        private final int[] status = new int[13];
         private int statusCount;
         private float hpShown = -1, hpTrail = -1;   // eased gauge value and damage trail
         private boolean statusOpen;
@@ -823,6 +823,19 @@ final class KhBottomPresentation extends Presentation {
             gameText(canvas, "Moogle points  " + status[7], x, y, s, -1, pw);
             y += line * 1.3f;
             gameText(canvas, "Sleights learned  " + status[8], x, y, s, -1, pw);
+            if (statusCount < 13) return;
+            java.util.List<String> sleights = KhNames.learnedSleights(status[9], status[10], status[11], status[12]);
+            if (sleights.isEmpty()) return;
+            // Names in columns under the count, small text; whatever does not fit is summarised.
+            int ss = Math.max(1, s - 2);
+            y += line * 1.05f;
+            float colW = (pw - u * 1.2f) / 3, rowH = 13 * ss, bottom = p.bottom - u * 0.4f;
+            int rows = Math.max(1, (int) ((bottom - y) / rowH)), cap = rows * 3;
+            for (int i = 0; i < sleights.size() && i < cap; i++) {
+                String label = (i == cap - 1 && sleights.size() > cap) ? "+" + (sleights.size() - cap + 1) + " more" : sleights.get(i);
+                gameText(canvas, label, x + (i / rows) * colW, y + (i % rows) * rowH, ss, -1, colW - u * 0.2f,
+                    0xFFCFE3FF, TEXT_SHADOW, 255);
+            }
         }
 
         private static final String[] WORLD_NAMES = {
@@ -852,20 +865,79 @@ final class KhBottomPresentation extends Presentation {
             String title = String.format("%s  \u00B7  Floor %d%s", world, map[1] + 1, map[2] != 0 ? "  \u00B7  Riku" : "");
             float top = bar + u * 0.15f;
             gameText(canvas, title, w / 2, top, s, 0, w - u);
-            top += 14 * s + u * 0.2f;
+            top += 14 * s;
+            int cur = map[3];
+            if (cur >= 0 && cur < 32 && (map[4 + cur] & KhRomArt.FLOOR_ROOM_CREATED) != 0) {
+                int ls = Math.max(2, s - 1);
+                gameText(canvas, KhNames.room((map[4 + cur] >> 16) & 0xFF), w / 2, top, ls, 0, w - u,
+                    0xFFE8C45A, TEXT_SHADOW, 255);
+                top += 13 * ls;
+            }
+            top += u * 0.2f;
             for (int i = 0; i < 32; i++) roomFlags[i] = map[4 + i] & 0xFFFF;
-            int phase = (int) ((android.os.SystemClock.uptimeMillis() / 200) % 4);
-            String key = map[1] + "/" + map[2] + "/" + map[3] + "/" + phase + "/" + java.util.Arrays.hashCode(roomFlags);
+            long now = android.os.SystemClock.uptimeMillis();
+            int phase = (int) ((now / 200) % 4), doorStep = (int) ((now / 133) % 4);   // 8 GBA frames per door step
+            String key = map[1] + "/" + map[2] + "/" + map[3] + "/" + phase + "/" + doorStep + "/"
+                + java.util.Arrays.hashCode(roomFlags);
             if (!key.equals(mapKey)) {
-                mapBitmap = art.floorMap(floor, roomFlags, map[3], phase);
+                mapBitmap = art.floorMap(floor, roomFlags, map[3], phase, doorStep);
                 mapKey = key;
             }
+            animating = true;   // current room pulse and door markers
             if (mapBitmap == null) return;
             float availW = w - u * 0.5f, availH = h - top - u * 0.25f;
             int scale = (int) Math.max(1, Math.min(availW / mapBitmap.getWidth(), availH / mapBitmap.getHeight()));
             float mw = mapBitmap.getWidth() * scale, mh = mapBitmap.getHeight() * scale;
             float left = (w - mw) / 2, mtop = top + (availH - mh) / 2;
             canvas.drawBitmap(mapBitmap, null, new RectF(left, mtop, left + mw, mtop + mh), pixel);
+            mapFloor = floor;
+            mapLeft = left;
+            mapTop = mtop;
+            mapScale = scale;
+            drawRoomPopup(canvas, w, h, u, now);
+        }
+
+        // Tapped room on the map: name and state, near the room, for a few seconds.
+        private KhRomArt.FloorLayout mapFloor;
+        private float mapLeft, mapTop;
+        private int mapScale = 1, popupRoom = -1;
+        private long popupUntil;
+
+        private boolean tapMap(float x, float y, long now) {
+            if (view != VIEW_MAP || mapFloor == null || mapCount < 36) return false;
+            int room = KhRomArt.roomAt(mapFloor, (x - mapLeft) / mapScale, (y - mapTop) / mapScale);
+            if (room < 0) return false;
+            popupRoom = room;
+            popupUntil = now + 3000;
+            performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);
+            return true;
+        }
+
+        private void drawRoomPopup(Canvas canvas, float w, float h, float u, long now) {
+            if (popupRoom < 0 || now > popupUntil || mapFloor == null || mapFloor.x[popupRoom] < 0) {
+                popupRoom = -1;
+                return;
+            }
+            int v = map[4 + popupRoom];
+            int flags = v & 0xFFFF;
+            String name = (flags & KhRomArt.FLOOR_ROOM_CREATED) != 0 ? KhNames.room((v >> 16) & 0xFF) : "Unexplored room";
+            String state = popupRoom == map[3] ? "You are here"
+                : (flags & KhRomArt.FLOOR_ROOM_EVENT_DONE) != 0 ? "Cleared"
+                : (flags & KhRomArt.FLOOR_ROOM_VISITED) != 0 ? "Visited"
+                : (flags & KhRomArt.FLOOR_ROOM_CREATED) != 0 ? "Not entered yet" : "Door not opened";
+            int s = Math.max(2, gbaScale() - 1);
+            float cx = mapLeft + ((mapFloor.x[popupRoom] - mapFloor.minX) * KhRomArt.ROOM_STEP_PX + 16) * mapScale;
+            float cy = mapTop + ((mapFloor.y[popupRoom] - mapFloor.minY) * KhRomArt.ROOM_STEP_PX) * mapScale;
+            float tw = Math.max(art.textWidth(name), art.textWidth(state)) * s + u * 0.6f, th = 26 * s + u * 0.3f;
+            float left = Math.max(u * 0.2f, Math.min(w - tw - u * 0.2f, cx - tw / 2));
+            float top = Math.max(barHeight() + u * 0.1f, cy - th - u * 0.1f);
+            int edge = gbaScale();
+            fill.setColor(art.panelColour(0xA));
+            canvas.drawRoundRect(left, top, left + tw, top + th, edge * 3, edge * 3, fill);
+            fill.setColor(art.panelColour(0xD));
+            canvas.drawRoundRect(left + edge, top + edge, left + tw - edge, top + th - edge, edge * 3, edge * 3, fill);
+            gameText(canvas, name, left + tw / 2, top + u * 0.15f, s, 0, tw, 0xFFE8C45A, TEXT_SHADOW, 255);
+            gameText(canvas, state, left + tw / 2, top + u * 0.15f + 13 * s, s, 0, tw);
         }
 
         /** Pad view middle: guest RAM words from bottom_screen_watches.txt. */
@@ -926,6 +998,7 @@ final class KhBottomPresentation extends Presentation {
                 statusOpen = false;
                 return;
             }
+            if (tapMap(x, y, now)) return;
             if (y >= headerHeight() && y < barHeight() && statusCount >= 9) {
                 statusOpen = true;
                 performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);

@@ -63,8 +63,6 @@ DeckSnapshot g_deck;
 
 // Battle card lists (USA), located through cardbattle_0 (0x08076CB4) and its Riku twin
 // (0x0807E910); CardBattleWork / CardSlot layout from the decompilation.
-constexpr uint32_t kCardBattleState = 0x02039DD4;  // CardBattleState* gCardBattleState
-constexpr uint32_t kStateRikuWork = 0x60;
 constexpr uint32_t kWorkSlots = 0x44;              // CardSlot* slots[4]
 constexpr uint32_t kWorkCursors = 0x94;            // u16 cursors[4]
 constexpr uint32_t kWorkSlotCounts = 0xA8;         // s16 slotCounts[4]
@@ -84,6 +82,9 @@ constexpr uint32_t kHandEvery = 3;
 // 79 literal uses there and checked against live memory) -> CardDisplayArgs { ListPool* pool
 // (= &work->cardDisplays[list]), CardSlot* slot, variant, u16 index, u8 listIndex }.
 constexpr uint32_t kSoraSelectedCard = 0x02034A98;  // CardDisplayWork*
+// Riku's twin in card_battle_riku.c: declared after its two request words (0x02034AA4 / AA8, 13 and
+// 8 uses), 63 literal uses in Riku's battle code against Sora's 79.
+constexpr uint32_t kRikuSelectedCard = 0x02034AAC;
 constexpr uint32_t kDisplayArgsPool = 0x38;          // ListPool*
 constexpr uint32_t kDisplayArgsIndex = 0x44;         // u16 selected slot
 constexpr uint32_t kDisplayArgsList = 0x46;          // u8
@@ -182,6 +183,7 @@ constexpr uint32_t kBtlObjHp = 0x2C, kBtlObjMaxHp = 0x2E;
 
 struct StatusSnapshot {
     int in_battle = 0, hp = 0, max_hp = 0, level = 0, cp = 0, exp = 0, next_exp = 0, moogle = 0, sleights = 0;
+    std::array<uint32_t, 4> learned{};   // learnedStocks (sleights 0-30), learnedStocks2 (31+), lo/hi words
 };
 StatusSnapshot g_status;
 
@@ -196,7 +198,10 @@ void read_status(StatusSnapshot& st, bool battle) {
     st.level = bus_read_u8(prog + kProgLevel);
     st.moogle = static_cast<int>(bus_read_u32(prog + kProgMooglePoints));
     st.sleights = 0;
-    for (uint32_t w = 0; w < 4; ++w) st.sleights += __builtin_popcount(bus_read_u32(prog + kProgLearnedStocks + 4 * w));
+    for (uint32_t w = 0; w < 4; ++w) {
+        st.learned[w] = bus_read_u32(prog + kProgLearnedStocks + 4 * w);
+        st.sleights += __builtin_popcount(st.learned[w]);
+    }
     st.hp = static_cast<int16_t>(bus_read_u16(kGameState + kGameFieldHp));
     st.in_battle = 0;
     if (battle) {
@@ -224,8 +229,8 @@ void read_hand(HandSnapshot& h) {
     h.slots = 0;
     uint32_t work = 0;
     int selected = -1;
-    h.side = 0;
-    const uint32_t display = bus_read_u32(kSoraSelectedCard);
+    h.side = (bus_read_u32(kGameState + kGameFlags) & 0x8u) ? 1 : 0;   // playing as Riku
+    const uint32_t display = bus_read_u32(h.side ? kRikuSelectedCard : kSoraSelectedCard);
     if (in_ewram(display, 0xA8)) {
         const uint32_t pool = bus_read_u32(display + kDisplayArgsPool);
         const int dlist = bus_read_u8(display + kDisplayArgsList);
@@ -234,14 +239,7 @@ void read_hand(HandSnapshot& h) {
             selected = bus_read_u16(display + kDisplayArgsIndex);
         }
     }
-    if (!in_ewram(work, 0xCC)) {
-        // Riku's battles keep their own selected-card static; try the state's pointers.
-        const uint32_t state = bus_read_u32(kCardBattleState);
-        if (!in_ewram(state, 0x10C)) return;
-        work = bus_read_u32(state + kStateRikuWork);
-        h.side = 1;
-        if (!in_ewram(work, 0xCC)) return;
-    }
+    if (!in_ewram(work, 0xCC)) return;
     const int list = static_cast<int8_t>(bus_read_u8(work + kWorkListIndex));
     if (list < 0 || list > 3) return;
     const uint32_t slots = bus_read_u32(work + kWorkSlots + 4u * static_cast<uint32_t>(list));
@@ -413,14 +411,16 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_pickupSnapshot(JNIEnv* env,
 }
 
 // Sora's status: out = [in battle (0/1), hp, max hp, level, cp, exp, next exp, moogle points,
-// sleights learned]; returns entries written.
+// sleights learned, 4 learned-sleight words]; returns entries written.
 JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_statusSnapshot(JNIEnv* env, jclass, jintArray out) {
     if (!out) return 0;
-    std::array<jint, 9> buf{};
+    std::array<jint, 13> buf{};
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         const StatusSnapshot& st = g_status;
-        buf = {st.in_battle, st.hp, st.max_hp, st.level, st.cp, st.exp, st.next_exp, st.moogle, st.sleights};
+        buf = {st.in_battle, st.hp, st.max_hp, st.level, st.cp, st.exp, st.next_exp, st.moogle, st.sleights,
+               static_cast<jint>(st.learned[0]), static_cast<jint>(st.learned[1]),
+               static_cast<jint>(st.learned[2]), static_cast<jint>(st.learned[3])};
     }
     const jsize n = std::min<jsize>(env->GetArrayLength(out), static_cast<jsize>(buf.size()));
     env->SetIntArrayRegion(out, 0, n, buf.data());
