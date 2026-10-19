@@ -28,6 +28,14 @@ void register_gbaimp_integration() {
     // this game's look; only the two named speakers get their own color.
     gbaimp::TextHistoryStyle& style = gbaimp::TextHistory::instance().config().style;
     style.speaker_colors = {{"Sora", {56, 189, 248, 255}}, {"Marluxia", {244, 114, 182, 255}}};
+#if defined(__ANDROID__)
+    // Handheld (AYN Thor): Start arrives as raw joystick button 6 and BACK as the controller Back
+    // button, both of which toggled the log over the game. Start stays the game's pause; BACK opens
+    // the settings menu (android/.../KhDualScreen.java). The log is still in the settings menu.
+    gbaimp::TextHistoryControls& controls = gbaimp::TextHistory::instance().config().controls;
+    controls.toggle_buttons.clear();
+    controls.toggle_joy_buttons.clear();
+#endif
 
     // Health bar region (top-left): pushed to the left edge of the widescreen view.
     gbaimp::HudZone health;

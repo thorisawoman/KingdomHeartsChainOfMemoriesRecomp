@@ -4,13 +4,15 @@ import android.app.Activity;
 import android.content.Context;
 import android.hardware.display.DisplayManager;
 import android.view.Display;
+import android.view.KeyEvent;
 
 import org.gbarecomp.GbaCompanion;
 
 /**
  * Puts the bottom-screen panel on the secondary display of dual-screen
  * devices (AYN Thor and similar). With no second display it does nothing, so
- * the same APK still runs on ordinary phones.
+ * the same APK still runs on ordinary phones. Also maps the BACK button to the
+ * settings menu.
  */
 public final class KhDualScreen implements GbaCompanion, DisplayManager.DisplayListener {
     private Activity activity;
@@ -37,6 +39,24 @@ public final class KhDualScreen implements GbaCompanion, DisplayManager.DisplayL
     public void onDestroy() {
         dismiss();
         if (displays != null) displays.unregisterDisplayListener(this);
+    }
+
+    /**
+     * The Thor's BACK button (bottom right) opens / closes the settings menu instead of reaching
+     * the game as Select (SDL maps a gamepad's BACK key to the controller Back button). The real
+     * Select button sends BUTTON_SELECT and is untouched.
+     */
+    @Override
+    public boolean onKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() != KeyEvent.KEYCODE_BACK) return false;
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            try {
+                KhNative.toggleMenu();
+            } catch (UnsatisfiedLinkError notLoaded) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override

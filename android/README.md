@@ -18,7 +18,7 @@ every game address it relies on and how each was verified, and what is left.
 
 | Screen | Contents |
 |---|---|
-| Top (1920×1080) | The game, full screen, from the recompiled code. The engine's on-screen touch pad is off. Physical controls work, and **the left stick moves like the d-pad**. |
+| Top (1920×1080) | The game, full screen, from the recompiled code. The engine's on-screen touch pad is off. Physical controls work, and **the left stick moves like the d-pad**. **Start** is the game's pause; the conversation log no longer pops up on Start. **BACK** (bottom right) opens and closes the settings menu. |
 | Bottom (1240×1080) | **Header**: the game's *DECK n* panel with the deck name (or battle state) and live CARDS / CP. **Status strip**: Lv, animated HP gauge, CP, EXP; tap it for a status card. **Views** (cycled by the header button): **DECK**, **MAP** and **PAD**. |
 
 - **DECK**: the equipped deck as real cards (art, category border, value) decoded from the ROM. Tap
@@ -34,7 +34,7 @@ every game address it relies on and how each was verified, and what is left.
 - **MENU** opens the in-game settings menu.
 
 Verified on the device: deck view, battle list and motion, friend cards, New cards, tap-to-select
-and use, map, card art and font.
+and use, map, card art and font, status strip, BACK → settings menu.
 
 ---
 
@@ -117,8 +117,16 @@ thread.
 as the game does (OAM frame records + 4bpp tiles + BGR555 palettes, or BG tilemaps). Nothing from
 the game is bundled.
 
+**Buttons (Thor).** The built-in "Odin Controller" sends `BTN_START`, `BTN_SELECT` and `KEY_BACK`
+(measured with `getevent -l`). SDL turns a gamepad's BACK key into the controller Back button (GBA
+Select), and the conversation log (gba-improvements' `TextHistory`) toggled on that button and on
+raw joystick buttons 4, 6 and 8, where Start lands. On Android the log's button toggles are cleared
+(`src/gbaimp_integration.cpp`; it is still in the settings menu and on F2). `KhDualScreen.onKeyEvent`
+consumes `KEYCODE_BACK` before SDL sees it and toggles the settings menu.
+
 **Engine changes** are small and generic, so they can go upstream:
-- an optional `GbaCompanion` per-game hook (`gbaGame.companion`) on the game Activity;
+- an optional `GbaCompanion` per-game hook (`gbaGame.companion`) on the game Activity, including
+  `onKeyEvent` (sees keys before SDL);
 - left-stick → d-pad in the keypad builder;
 - the link fixes.
 
@@ -214,6 +222,7 @@ pid after any restart.
 | 0.10 | **Battle list actually read** (via `sSoraSelectedCard`); tap-to-select / use; deck close-up |
 | 0.11 | Category borders for friend cards; shorter battle name bar; UTF-16 deck name |
 | 0.12 | Sora's status strip and status card |
+| 0.13 | Start no longer opens the conversation log; BACK opens the settings menu |
 
 Git: parent branch `android-thor-port`; submodule branches `gbarecomp/android-companion` and
 `external/gba-improvements/android-macos-host`. Nothing is pushed.
@@ -222,9 +231,6 @@ Git: parent branch `android-thor-port`; submodule branches `gbarecomp/android-co
 
 ## 7. Next
 
-- **Buttons**: the Thor's pause button should only pause; the BACK button (bottom right) should
-  open the settings menu. Confirm which keys each button sends (`adb shell getevent -l`), then route
-  them in the runtime.
 - Riku's story: the battle list falls back to `gCardBattleState->rikuWork`. It needs Riku's own
   selected-card static, found the same way as Sora's.
 - Map: door overlays (closed and hall-door sprites) and room names (`nameId`).
