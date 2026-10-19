@@ -39,6 +39,8 @@ constexpr uint32_t kDecks = 0x02039DE0;           // Deck gDecks[3], 0xE0 bytes 
 constexpr uint32_t kDeckSize = 0xE0;
 constexpr uint32_t kDeckCpCost = 0xDA;            // u16
 constexpr uint32_t kDeckCardCount = 0xDC;         // u16
+constexpr uint32_t kDeckName = 0xC6;              // u8 name[0x14]
+constexpr int kDeckNameSize = 0x14;
 constexpr uint32_t kCardCollection = 0x0203A080;  // u16 gCardCollection[999]
 constexpr uint32_t kCardCount = 0x0203A858;       // u16 gCardCount
 constexpr uint32_t kActiveDeck = 0x02034AB0;      // u8
@@ -54,6 +56,7 @@ struct DeckSnapshot {
     int collection_count = 0;
     int slots = 0;                                 // entries in cards
     std::array<uint16_t, kDeckSlots> cards{};      // collection entries (ID | flags)
+    std::array<uint8_t, kDeckNameSize> name{};
 };
 DeckSnapshot g_deck;
 
@@ -135,6 +138,7 @@ void read_deck(DeckSnapshot& d) {
     if (d.active < 0 || d.active > 2) return;
     const uint32_t deck = kDecks + static_cast<uint32_t>(d.active) * kDeckSize;
     d.cp_cost = bus_read_u16(deck + kDeckCpCost);
+    for (int i = 0; i < kDeckNameSize; ++i) d.name[i] = bus_read_u8(deck + kDeckName + static_cast<uint32_t>(i));
     d.card_count = bus_read_u16(deck + kDeckCardCount);
     for (int i = 0; i < kDeckSlots; ++i) {
         const uint16_t index = bus_read_u16(deck + 2u * static_cast<uint32_t>(i));
@@ -205,10 +209,11 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_snapshot(JNIEnv* env, jclas
 }
 
 // out = [active deck (0-2, -1 unknown), deck CP cost, deck card count, collection count, n,
-//        n collection entries (card ID | 0x8000 premium | deck flags)]; returns entries written.
+//        n collection entries (card ID | 0x8000 premium | deck flags), 20 deck name bytes];
+// returns entries written.
 JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_deckSnapshot(JNIEnv* env, jclass, jintArray out) {
     if (!out) return 0;
-    std::array<jint, 5 + kDeckSlots> buf{};
+    std::array<jint, 5 + kDeckSlots + kDeckNameSize> buf{};
     int n;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -219,6 +224,7 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_deckSnapshot(JNIEnv* env, j
         buf[4] = g_deck.slots;
         for (int i = 0; i < g_deck.slots; ++i) buf[5 + i] = g_deck.cards[i];
         n = 5 + g_deck.slots;
+        for (int i = 0; i < kDeckNameSize; ++i) buf[n++] = g_deck.name[i];
     }
     const jsize cap = env->GetArrayLength(out);
     if (n > cap) n = cap;

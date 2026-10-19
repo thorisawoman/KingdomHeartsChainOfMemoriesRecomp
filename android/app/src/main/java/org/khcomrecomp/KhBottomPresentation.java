@@ -31,7 +31,7 @@ import java.util.List;
  * Bottom-screen panel with two views, switched from the status bar:
  *
  * DECK (default) shows the equipped deck read live from guest RAM (see
- * src/android/dual_screen.cpp), drawn with the game's own card art (KhCardArt). During a battle it
+ * src/android/dual_screen.cpp), drawn with the game's own card art (KhRomArt). During a battle it
  * switches to the battle card list: selected card outlined, used cards dimmed,
  * stocked cards marked.
  *
@@ -43,7 +43,7 @@ import java.util.List;
 final class KhBottomPresentation extends Presentation {
     private static final String WATCH_FILE = "bottom_screen_watches.txt";
 
-    private KhCardArt art;
+    private KhRomArt art;
 
     KhBottomPresentation(Context outer, Display display) {
         super(outer, display);
@@ -63,7 +63,7 @@ final class KhBottomPresentation extends Presentation {
         int[] addrs = new int[watches.size()];
         for (int i = 0; i < addrs.length; i++) addrs[i] = watches.get(i).address;
         KhNative.setWatches(addrs);
-        art = KhCardArt.open(getContext(), GbaGameConfig.load(getContext()).romFile);
+        art = KhRomArt.open(getContext(), GbaGameConfig.load(getContext()).romFile);
         setContentView(new PanelView(getContext(), watches, art));
         if (getWindow() != null) {
             // Touches still arrive, but focus stays with the game window on the top screen:
@@ -161,7 +161,7 @@ final class KhBottomPresentation extends Presentation {
 
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint pixel = new Paint();
-        private final KhCardArt art;   // null when the ROM is not readable: flat tiles instead
+        private final KhRomArt art;   // null when the ROM is not readable: flat tiles instead
         private final RectF card = new RectF();
         private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mono = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -183,7 +183,7 @@ final class KhBottomPresentation extends Presentation {
             }
         };
 
-        PanelView(Context c, List<Watch> watches, KhCardArt art) {
+        PanelView(Context c, List<Watch> watches, KhRomArt art) {
             super(c);
             this.watches = watches;
             this.art = art;
@@ -192,7 +192,7 @@ final class KhBottomPresentation extends Presentation {
             text.setTextAlign(Paint.Align.CENTER);
             mono.setColor(0xFFCFD3E6);
             mono.setTypeface(android.graphics.Typeface.MONOSPACE);
-            setBackgroundColor(0xFF0E1124);
+            setBackgroundColor(art != null ? KhRomArt.BACKDROP : 0xFF0E1124);
         }
 
         @Override
@@ -217,16 +217,67 @@ final class KhBottomPresentation extends Presentation {
 
         private float unit() { return Math.min(getWidth(), getHeight()) / 12f; }
 
-        /** Height of the status bar shared by both views. */
-        private float barHeight() { return unit() * 1.4f; }
+        /** Integer scale for the game's pixel art (GBA pixels -> screen pixels). */
+        private int gbaScale() { return Math.max(2, getWidth() / 300); }
+
+        /** Height of the header shared by both views: the deck panel when art is available. */
+        private float barHeight() {
+            if (art == null) return unit() * 1.4f;
+            return KhRomArt.PANEL_HEIGHT * gbaScale() + unit() * 0.5f;
+        }
+
+        // Game-font colours: dialogue white with its dark shadow (gDialogBoxPalette 1 / 2).
+        private static final int TEXT_BODY = 0xFFF8F8F8, TEXT_SHADOW = 0xFF404040;
+
+        /**
+         * Draws s in the game font at integer scale, top-left at (x, y) for align -1, centred
+         * on x for 0, right-aligned at x for 1, shortened with ".." to fit maxWidth. Falls back
+         * to the system font without art. Returns the drawn width.
+         */
+        private float gameText(Canvas canvas, String s, float x, float y, int scale, int align,
+                               float maxWidth, int body, int shadow, int alpha) {
+            if (art == null) {
+                text.setTextSize(scale * 11f);
+                text.setTextAlign(align < 0 ? Paint.Align.LEFT : align == 0 ? Paint.Align.CENTER : Paint.Align.RIGHT);
+                text.setAlpha(alpha);
+                canvas.drawText(s, x, y + scale * 10f, text);
+                text.setAlpha(255);
+                text.setTextAlign(Paint.Align.CENTER);
+                return text.measureText(s);
+            }
+            if (art.textWidth(s) * scale > maxWidth) {
+                while (s.length() > 1 && art.textWidth(s + "..") * scale > maxWidth) s = s.substring(0, s.length() - 1);
+                s = s.trim() + "..";
+            }
+            Bitmap b = art.text(s, body, shadow);
+            if (b == null) return 0;
+            float bw = b.getWidth() * scale;
+            float left = align < 0 ? x : align == 0 ? x - bw / 2 : x - bw;
+            pixel.setAlpha(alpha);
+            canvas.drawBitmap(b, null, new RectF(left, y, left + bw, y + b.getHeight() * scale), pixel);
+            pixel.setAlpha(255);
+            return bw;
+        }
+
+        private float gameText(Canvas canvas, String s, float x, float y, int scale, int align, float maxWidth) {
+            return gameText(canvas, s, x, y, scale, align, maxWidth, TEXT_BODY, TEXT_SHADOW, 255);
+        }
 
         @Override
         protected void onSizeChanged(int w, int h, int ow, int oh) {
             float u = unit();
             float pad = u * 0.25f, bar = barHeight();
-            // Status bar: text on the left, VIEW toggle and MENU on the right.
-            bView.rect.set(w - u * 2.6f, pad, w - pad, bar - pad);
-            bMenu.rect.set(w - u * 5.2f, pad, w - u * 2.85f, bar - pad);
+            if (art != null) {
+                // Header: deck panel on the left, MENU over the view toggle on the right.
+                float left = Math.max(pad + KhRomArt.PANEL_WIDTH * gbaScale() + pad, w - u * 3.4f);
+                float mid = bar / 2;
+                bMenu.rect.set(left, pad, w - pad, mid - pad / 2);
+                bView.rect.set(left, mid + pad / 2, w - pad, bar - pad);
+            } else {
+                // Status bar: text on the left, VIEW toggle and MENU on the right.
+                bView.rect.set(w - u * 2.6f, pad, w - pad, bar - pad);
+                bMenu.rect.set(w - u * 5.2f, pad, w - u * 2.85f, bar - pad);
+            }
             // Pad view: shoulders under the bar, d-pad bottom left, A/B bottom right.
             bL.rect.set(pad, bar + pad, w * 0.3f, bar + pad + u * 1.5f);
             bR.rect.set(w * 0.7f, bar + pad, w - pad, bar + pad + u * 1.5f);
@@ -261,28 +312,96 @@ final class KhBottomPresentation extends Presentation {
         @Override
         protected void onDraw(Canvas canvas) {
             float w = getWidth(), h = getHeight(), u = unit(), bar = barHeight();
-            text.setTextAlign(Paint.Align.LEFT);
-            text.setTextSize(u * 0.55f);
-            // Ellipsize so the status never runs under the MENU / view buttons.
-            String status = statusLine();
-            float room = bMenu.rect.left - u * 0.7f;
-            int fit = text.breakText(status, true, room, null);
-            if (fit < status.length()) status = status.substring(0, Math.max(0, fit - 1)) + "\u2026";
-            canvas.drawText(status, u * 0.4f, bar / 2 - (text.descent() + text.ascent()) / 2, text);
-            text.setTextAlign(Paint.Align.CENTER);
+            if (!drawHeaderPanel(canvas, u)) {
+                text.setTextAlign(Paint.Align.LEFT);
+                text.setTextSize(u * 0.55f);
+                // Ellipsize so the status never runs under the MENU / view buttons.
+                String status = statusLine();
+                float room = bMenu.rect.left - u * 0.7f;
+                int fit = text.breakText(status, true, room, null);
+                if (fit < status.length()) status = status.substring(0, Math.max(0, fit - 1)) + "\u2026";
+                canvas.drawText(status, u * 0.4f, bar / 2 - (text.descent() + text.ascent()) / 2, text);
+                text.setTextAlign(Paint.Align.CENTER);
+            }
             if (buttons == deckButtons) {
                 if (handLive()) drawHand(canvas, w, h, u, bar);
                 else drawDeck(canvas, w, h, u, bar);
             }
             else drawWatches(canvas, w, u, bar);
             text.setTextSize(u * 0.55f);
-            for (Button b : buttons) {
+            for (Button b : buttons) drawButton(canvas, b);
+        }
+
+        /** A button in the deck panel's colours (fill 0xd, outline 0xa, pressed 0xb). */
+        private void drawButton(Canvas canvas, Button b) {
+            if (art == null) {
                 fill.setColor(b.holders > 0 ? 0xFF5C6BC0 : 0xFF262B4A);
                 float rr = b.rect.height() * 0.3f;
                 canvas.drawRoundRect(b.rect, rr, rr, fill);
                 float ty = b.rect.centerY() - (text.descent() + text.ascent()) / 2;
                 canvas.drawText(b.label, b.rect.centerX(), ty, text);
+                return;
             }
+            int scale = gbaScale();
+            float edge = scale;
+            float rr = scale * 3f;
+            fill.setColor(art.panelColour(0xA));
+            canvas.drawRoundRect(b.rect, rr, rr, fill);
+            fill.setColor(art.panelColour(b.holders > 0 ? 0xB : 0xD));
+            canvas.drawRoundRect(b.rect.left + edge, b.rect.top + edge, b.rect.right - edge, b.rect.bottom - edge,
+                rr, rr, fill);
+            int ts = Math.max(2, Math.min(scale, (int) (b.rect.height() / 14)));
+            gameText(canvas, b.label, b.rect.centerX(), b.rect.centerY() - ts * 6.5f, ts, 0, b.rect.width() - 2 * edge);
+        }
+
+        /** Deck name from the snapshot when it is plain ASCII, else null. */
+        private String deckName() {
+            if (deckCount < 5) return null;
+            int base = 5 + Math.min(deck[4], deckCount - 5);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 20 && base + i < deckCount; i++) {
+                int c = deck[base + i] & 0xFF;
+                if (c == 0) break;
+                if (c < 32 || c > 126) return null;
+                sb.append((char) c);
+            }
+            String name = sb.toString().trim();
+            return name.isEmpty() ? null : name;
+        }
+
+        /**
+         * Header from the deck menu's own panel: DECK n tab, name bar (deck name, or the battle
+         * state), and the live CARDS / CP values over the panel's placeholder fields.
+         */
+        private boolean drawHeaderPanel(Canvas canvas, float u) {
+            if (art == null) return false;
+            int active = deckCount >= 5 && deck[0] >= 0 && deck[0] <= 2 ? deck[0] : 0;
+            Bitmap panel = art.deckPanel(active);
+            if (panel == null) return false;
+            int s = gbaScale();
+            float ox = u * 0.25f, oy = u * 0.25f;
+            canvas.drawBitmap(panel, null, new RectF(ox, oy, ox + panel.getWidth() * s, oy + panel.getHeight() * s), pixel);
+            int[] nb = KhRomArt.PANEL_NAME;
+            String line;
+            if (handLive()) {
+                String list = hand[2] > 0 && hand[2] < LIST_NAMES.length ? "  \u00B7  " + LIST_NAMES[hand[2]] : "";
+                line = String.format("%s%s  \u00B7  %d left  \u00B7  Stock %d",
+                    hand[1] == 1 ? "Riku" : "Sora", list, hand[4], hand[5]);
+            } else {
+                String name = deckName();
+                if (snapCount < 2 || snap[1] < 0) line = name != null ? name : "Waiting for the game";
+                else line = name != null ? name : snap[1] == 1 ? "Battle" : "Field";
+            }
+            gameText(canvas, line, ox + (nb[0] + 3) * s, oy + (nb[1] - 1) * s, s, -1, (nb[2] - nb[0] - 4) * s);
+            if (deckCount >= 5) {
+                int digitBody = art.panelColour(0xF), digitShadow = art.panelColour(0xE);
+                int[] cr = KhRomArt.PANEL_CARDS, cp = KhRomArt.PANEL_CP;
+                gameText(canvas, Integer.toString(deck[4]), ox + (cr[0] + 2) * s, oy + (cr[1] - 5) * s, s, -1,
+                    (cr[2] - cr[0]) * s, digitBody, digitShadow, 255);
+                gameText(canvas, Integer.toString(deck[1]), ox + (cp[0] + 2) * s, oy + (cp[1] - 5) * s, s, -1,
+                    (cp[2] - cp[0]) * s, digitBody, digitShadow, 255);
+            }
+            return true;
         }
 
         private static int categoryColor(KhCards.Category c) {
@@ -358,7 +477,7 @@ final class KhBottomPresentation extends Presentation {
                 for (int c = 1; c <= Math.max(1, n); c++) {
                     int rows = (n + c - 1) / c;
                     float cw = (w - gap) / c, ch = (bottom - top) / rows;
-                    float h = Math.min(ch - labelH - gap, (cw - gap) * KhCardArt.HEIGHT / KhCardArt.WIDTH);
+                    float h = Math.min(ch - labelH - gap, (cw - gap) * KhRomArt.HEIGHT / KhRomArt.WIDTH);
                     if (h > cardH) {
                         cardH = h;
                         gridCols = c;
@@ -376,10 +495,10 @@ final class KhBottomPresentation extends Presentation {
             float gap = u * 0.15f;
             float cx = gap / 2 + (i % gridCols) * cellW + cellW / 2;
             float y = top + (i / gridCols) * cellH + gap / 2;
-            float cw = cardH * KhCardArt.WIDTH / KhCardArt.HEIGHT;
+            float cw = cardH * KhRomArt.WIDTH / KhRomArt.HEIGHT;
             card.set(cx - cw / 2, y, cx + cw / 2, y + cardH);
             boolean reload = id == RELOAD_ID;
-            Bitmap bmp = art == null ? null : reload ? art.back(KhCardArt.BACK_RED) : art.card(id);
+            Bitmap bmp = art == null ? null : reload ? art.back(KhRomArt.BACK_RED) : art.card(id);
             if (selected) {
                 fill.setColor(0x55FFFFFF);
                 float pad = cardH * 0.06f;
@@ -415,12 +534,9 @@ final class KhBottomPresentation extends Presentation {
             }
             if (labelH > 0) {
                 String name = reload ? "Reload" : KhCards.name(id);
-                text.setTextSize(labelH * 0.72f);
-                text.setAlpha(dim ? 110 : 255);
-                int fit = text.breakText(name, true, cellW - gap, null);
-                canvas.drawText(fit < name.length() ? name.substring(0, Math.max(0, fit - 1)) + "\u2026" : name,
-                    cx, card.bottom + labelH * 0.78f, text);
-                text.setAlpha(255);
+                int ls = Math.max(1, (int) (labelH / 13));
+                gameText(canvas, name, cx, card.bottom + (labelH - ls * 12) / 2, ls, 0, cellW - gap,
+                    TEXT_BODY, TEXT_SHADOW, dim ? 110 : 255);
             }
         }
 
@@ -428,9 +544,8 @@ final class KhBottomPresentation extends Presentation {
         private void drawDeck(Canvas canvas, float w, float h, float u, float bar) {
             int n = deckCount >= 5 ? Math.min(deck[4], deckCount - 5) : 0;
             if (n == 0) {
-                text.setTextSize(u * 0.5f);
-                canvas.drawText(deckCount >= 5 ? "No deck equipped yet" : "Waiting for the game\u2026",
-                    w / 2, (bar + h) / 2, text);
+                gameText(canvas, deckCount >= 5 ? "No deck equipped yet" : "Waiting for the game...",
+                    w / 2, (bar + h) / 2 - gbaScale() * 6, gbaScale(), 0, w);
                 return;
             }
             float top = bar + u * 0.1f;
@@ -449,8 +564,7 @@ final class KhBottomPresentation extends Presentation {
         private void drawHand(Canvas canvas, float w, float h, float u, float bar) {
             int n = Math.min(hand[6], handCount - 7);
             if (n <= 0) {
-                text.setTextSize(u * 0.5f);
-                canvas.drawText("No cards in this list", w / 2, (bar + h) / 2, text);
+                gameText(canvas, "No cards in this list", w / 2, (bar + h) / 2 - gbaScale() * 6, gbaScale(), 0, w);
                 return;
             }
             float top = bar + u * 0.1f;

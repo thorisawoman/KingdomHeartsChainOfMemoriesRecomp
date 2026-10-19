@@ -19,7 +19,8 @@ final class KhNative {
 
     /**
      * Equipped deck: out = [active deck (0-2, -1 unknown), CP cost, card count,
-     * collection size, n, n card entries (ID | 0x8000 premium)]; returns count.
+     * collection size, n, n card entries (ID | 0x8000 premium), 20 deck name bytes];
+     * returns count.
      */
     static native int deckSnapshot(int[] out);
 
