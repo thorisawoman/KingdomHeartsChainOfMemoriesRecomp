@@ -19,7 +19,7 @@ every game address it relies on and how each was verified, and what is left.
 | Screen | Contents |
 |---|---|
 | Top (1920×1080) | The game, full screen, from the recompiled code. The engine's on-screen touch pad is off. Physical controls work, and **the left stick moves like the d-pad**. **Start** is the game's pause; the conversation log no longer pops up on Start. **BACK** (bottom right) opens and closes the settings menu. |
-| Bottom (1240×1080) | **Header**: the game's *DECK n* panel with the deck name (or battle state) and live CARDS / CP. **Status strip**: Lv, animated HP gauge, CP, EXP; tap it for a status card. **Views** (cycled by the header button): **DECK**, **MAP** and **PAD**. |
+| Bottom (1240×1080) | **Title logo** until a game is in progress (boot, intro, title, file select). Then: **Header**: the game's *DECK n* panel with the deck name (or battle state) and live CARDS / CP. **Status strip**: Lv, animated HP gauge, CP, EXP; tap it for a status card. **Views**: **DECK** and **MAP**, switched with the header button or **the right stick click (R3)**. |
 
 - **DECK**: the equipped deck as real cards (art, category border, value) decoded from the ROM. Tap
   a card for a close-up. A **New cards** strip shows the latest pickups.
@@ -31,9 +31,8 @@ every game address it relies on and how each was verified, and what is left.
   unvisited rooms dimmed, event rooms, the current room pulsing, animated door markers for closed
   doors and hall exits), with the world, the floor and the current room's name. **Tap a room** to
   see its name and state.
-- **PAD**: touch GBA buttons (sent through the normal `keybinds.ini` path) and a RAM watch list read
-  from `bottom_screen_watches.txt`.
-- **MENU** opens the in-game settings menu.
+- Everything else is on the physical controls. **BACK** opens the settings menu and **Start**
+  pauses. The touch pad, PAD view and MENU button were removed in 0.18.
 
 Verified on the device: deck view, battle list and motion, friend cards, New cards, tap-to-select
 and use, map, card art and font, status strip, Start = pause only, BACK → settings menu.
@@ -188,6 +187,7 @@ resets the baseline instead of reporting them.
 | `gMapFloorDefs` (12 bytes: entry, exit, links* +4, eventDoors* +8) Sora · Riku | `0x0984C868` · `0x0984CBD0` |
 | Map room tiles (18 shapes × 32×32) · room palettes · map BG palettes | `0x0976B340` · `0x0984A0F8` · `0x09849F78` |
 | Map door markers: closed-door frames / sheet · hall-door frames / sheet (tile data at sheet + 248) | `0x09EF654C` / `0x0976E3DC` · `0x09EF64FC` / `0x0976DDE4` |
+| Title logo (drawn at (80, 70), back to front): heart · KINGDOM HEARTS · crown · CHAIN of MEMORIES, as frames table / sheet / palette (tile data = whole tiles ending at the sheet end) | `0x09EF65C4/0x0976FCB0/0x0984A738` (2 banks) · `0x09EF65BC/0x0976F1B8/0x0984A718` · `0x09EF65B4/0x0976F0DC/0x0984A6F8` · `0x09EF65AC/0x0976ED34/0x0984A6F8` |
 
 Names (in `KhNames.java`, generated from the decomp): room names in `gRoomNames` order (indexed by
 `MapFloorRoom.nameId`), and sleights in `LearnedStock` order (bits 0–30 of `learnedStocks`, then
@@ -246,6 +246,7 @@ pid after any restart.
 | 0.15 | New cards no longer counts cards returning after a battle; compact status card so sleight names fit |
 | 0.16 | **In-game saves work**: save type SRAM 32 KB (was EEPROM, so nothing was ever written) |
 | 0.17 | New cards ignores the collection swap when a save loads |
+| 0.18 | Title logo on the bottom screen until play starts; touch pad / PAD view / MENU removed; R3 switches DECK/MAP |
 
 Git: parent branch `android-thor-port`; submodule branches `gbarecomp/android-companion` and
 `external/gba-improvements/android-macos-host`. Nothing is pushed.

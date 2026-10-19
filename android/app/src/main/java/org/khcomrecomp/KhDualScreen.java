@@ -12,7 +12,7 @@ import org.gbarecomp.GbaCompanion;
  * Puts the bottom-screen panel on the secondary display of dual-screen
  * devices (AYN Thor and similar). With no second display it does nothing, so
  * the same APK still runs on ordinary phones. Also maps the BACK button to the
- * settings menu.
+ * settings menu and the right stick click to the bottom screen's DECK / MAP switch.
  */
 public final class KhDualScreen implements GbaCompanion, DisplayManager.DisplayListener {
     private Activity activity;
@@ -48,6 +48,12 @@ public final class KhDualScreen implements GbaCompanion, DisplayManager.DisplayL
      */
     @Override
     public boolean onKeyEvent(KeyEvent event) {
+        // Right stick click (unused by GBA games): switch the bottom screen between DECK and MAP.
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_THUMBR) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 && presentation != null)
+                presentation.toggleView();
+            return true;
+        }
         if (event.getKeyCode() != KeyEvent.KEYCODE_BACK) return false;
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
             try {

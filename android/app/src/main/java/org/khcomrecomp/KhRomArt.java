@@ -105,6 +105,7 @@ final class KhRomArt {
     private final SparseArray<Bitmap> panels = new SparseArray<>();
     private int[] panelColours;
     private final SparseArray<FloorLayout> floors = new SparseArray<>();
+    private Bitmap logo;
     private final SparseArray<int[]> mapPalettes = new SparseArray<>();
     private final Map<String, Bitmap> texts = new LinkedHashMap<String, Bitmap>(64, 0.75f, true) {
         @Override
@@ -225,6 +226,85 @@ final class KhRomArt {
         }
         panels.put(deck, b);
         return b;
+    }
+
+    // Title logo (title.c TitleLogoLoadSprites / draw): sprites drawn at one origin (80, 70), back to
+    // front heart, KINGDOM HEARTS, crown, CHAIN of MEMORIES.
+    // {frames table, sheet, sheet size, palette, palette banks}.
+    // The Disney / Square Enix line is left out: it is dark text made for the title's light backdrop.
+    private static final int[][] LOGO_SPRITES = {
+        {0x09EF65C4, 0x0976FCB0, 4646, 0x0984A738, 2},   // heart (two palette banks)
+        {0x09EF65BC, 0x0976F1B8, 2808, 0x0984A718, 1},   // KINGDOM HEARTS
+        {0x09EF65B4, 0x0976F0DC, 218, 0x0984A6F8, 1},    // crown
+        {0x09EF65AC, 0x0976ED34, 934, 0x0984A6F8, 1},    // CHAIN of MEMORIES
+    };
+
+    /** The game's title logo, cropped to its pixels, or null. */
+    synchronized Bitmap titleLogo() {
+        if (logo != null) return logo;
+        try {
+            int w = 240, h = 160;
+            int[] px = new int[w * h];
+            for (int[] sp : LOGO_SPRITES) {
+                int frame = u32(sp[0]);
+                // One frame record and one animation record precede the tiles; the tile data is
+                // whole 32-byte tiles that end at the end of the sheet.
+                int p = frame + 2 + 6 * u16(frame) + 2;
+                p += 6 + 4 * u16(p + 4);
+                int end = sp[1] + sp[2];
+                int tiles = end - 32 * ((end - p) / 32);
+                drawFramePalettes(px, w, h, frame, tiles, sp[3], sp[4], 80, 70);
+            }
+            int minX = w, minY = h, maxX = -1, maxY = -1;
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    if (px[y * w + x] != 0) {
+                        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+                        minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+                    }
+            if (maxX < 0) return null;
+            int cw = maxX - minX + 1, ch = maxY - minY + 1;
+            int[] out = new int[cw * ch];
+            for (int y = 0; y < ch; y++) System.arraycopy(px, (minY + y) * w + minX, out, y * cw, cw);
+            logo = Bitmap.createBitmap(out, cw, ch, Bitmap.Config.ARGB_8888);
+        } catch (IOException | RuntimeException bad) {
+            return null;
+        }
+        return logo;
+    }
+
+    /** Like drawFrameAt, with bankCount palettes from paletteBase picked per piece (attr2 >> 12). */
+    private void drawFramePalettes(int[] px, int w, int h, int frame, int tiles, int paletteBase, int bankCount,
+                                   int ox, int oy) throws IOException {
+        int pieces = u16(frame);
+        if (pieces > 64) throw new IOException("bad frame");
+        int[][] banks = new int[bankCount][];
+        for (int b = 0; b < bankCount; b++) banks[b] = palette(paletteBase + 32 * b);
+        for (int p = 0; p < pieces; p++) {
+            int a0 = u16(frame + 2 + 6 * p), a1 = u16(frame + 4 + 6 * p), a2 = u16(frame + 6 + 6 * p);
+            int shape = a0 >>> 14, size = a1 >>> 14;
+            if (shape > 2) continue;
+            int pw = SHAPES[shape][size * 2], ph = SHAPES[shape][size * 2 + 1];
+            int x = a1 & 0x1FF, y = a0 & 0xFF;
+            if ((x & 0x100) != 0) x -= 512;
+            if ((y & 0x80) != 0) y -= 256;
+            boolean hflip = ((a1 >> 12) & 1) != 0, vflip = ((a1 >> 13) & 1) != 0;
+            int first = a2 & 0x3FF, tw = pw / 8;
+            int[] colours = banks[(a2 >> 12) % bankCount];
+            for (int ty = 0; ty < ph / 8; ty++)
+                for (int tx = 0; tx < tw; tx++)
+                    for (int py = 0; py < 8; py++)
+                        for (int qx = 0; qx < 8; qx++) {
+                            int b8 = u8(tiles + 32 * (first + ty * tw + tx) + py * 4 + qx / 2);
+                            int v = (qx & 1) != 0 ? b8 >> 4 : b8 & 15;
+                            if (v == 0) continue;
+                            int sx = tx * 8 + qx, sy = ty * 8 + py;
+                            if (hflip) sx = pw - 1 - sx;
+                            if (vflip) sy = ph - 1 - sy;
+                            int X = ox + x + sx, Y = oy + y + sy;
+                            if (X >= 0 && X < w && Y >= 0 && Y < h) px[Y * w + X] = colours[v];
+                        }
+        }
     }
 
     /** The floor's room layout (AllmapAddRoom's walk from room 0), or null. */

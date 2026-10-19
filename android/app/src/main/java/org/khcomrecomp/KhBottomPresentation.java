@@ -19,16 +19,12 @@ import android.view.WindowInsetsController;
 import org.gbarecomp.GbaGameConfig;
 import org.libsdl.app.SDLActivity;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Bottom-screen panel with three views, cycled from the header button:
+ * Bottom-screen panel. Until a game is in progress (save loaded or new game on its first floor)
+ * it shows the game's title logo. Then two views, switched with the header button or the right
+ * stick click (R3); everything else uses the physical buttons:
  *
  * DECK (default) shows the equipped deck read live from guest RAM (see
  * src/android/dual_screen.cpp), drawn with the game's own card art (KhRomArt). During a battle it
@@ -36,16 +32,10 @@ import java.util.List;
  * stocked cards marked, with the cards picked up during the battle along the bottom.
  *
  * MAP shows the current floor the way the game's map screen draws it.
- *
- * PAD shows GBA buttons as touch targets. They inject the keyboard keys that
- * keybinds.ini maps to each button, so input reaches the game through its normal
- * path (SDL -> keybinds -> keypad), plus any guest RAM words listed in
- * bottom_screen_watches.txt (app external files dir, editable without a rebuild).
  */
 final class KhBottomPresentation extends Presentation {
-    private static final String WATCH_FILE = "bottom_screen_watches.txt";
-
     private KhRomArt art;
+    private PanelView panel;
 
     KhBottomPresentation(Context outer, Display display) {
         super(outer, display);
@@ -61,12 +51,9 @@ final class KhBottomPresentation extends Presentation {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        List<Watch> watches = loadWatches(getContext().getExternalFilesDir(null));
-        int[] addrs = new int[watches.size()];
-        for (int i = 0; i < addrs.length; i++) addrs[i] = watches.get(i).address;
-        KhNative.setWatches(addrs);
         art = KhRomArt.open(getContext(), GbaGameConfig.load(getContext()).romFile);
-        setContentView(new PanelView(getContext(), watches, art));
+        panel = new PanelView(getContext(), art);
+        setContentView(panel);
         if (getWindow() != null) {
             // Touches still arrive, but focus stays with the game window on the top screen:
             // a focus change there would make SDL drop held keys and pause.
@@ -77,44 +64,6 @@ final class KhBottomPresentation extends Presentation {
                 c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
             }
         }
-    }
-
-    static final class Watch {
-        final int address;
-        final String label;
-        Watch(int address, String label) { this.address = address; this.label = label; }
-    }
-
-    /** Lines: `0x0200ABCD  label` (# comments). A commented template is written on first run. */
-    static List<Watch> loadWatches(File dir) {
-        List<Watch> out = new ArrayList<>();
-        if (dir == null) return out;
-        File f = new File(dir, WATCH_FILE);
-        if (!f.isFile()) {
-            try (FileWriter w = new FileWriter(f)) {
-                w.write("# Guest RAM words shown on the bottom screen (EWRAM 0x02xxxxxx / IWRAM 0x03xxxxxx).\n"
-                      + "# One per line: <hex address> <label>. Up to 64. Relaunch the game to reload.\n"
-                      + "# 0x03007488 game mode\n");
-            } catch (IOException ignored) {
-            }
-            return out;
-        }
-        try (BufferedReader r = new BufferedReader(new FileReader(f))) {
-            String line;
-            while ((line = r.readLine()) != null && out.size() < 64) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
-                String[] parts = line.split("\\s+", 2);
-                try {
-                    String hex = parts[0].toLowerCase().startsWith("0x") ? parts[0].substring(2) : parts[0];
-                    int addr = (int) Long.parseLong(hex, 16);
-                    out.add(new Watch(addr, parts.length > 1 ? parts[1] : parts[0]));
-                } catch (NumberFormatException ignored) {
-                }
-            }
-        } catch (IOException ignored) {
-        }
-        return out;
     }
 
     /** A touch target; `keys` are Android keycodes pressed together (empty = action). */
@@ -131,26 +80,17 @@ final class KhBottomPresentation extends Presentation {
         }
     }
 
+    /** Switches DECK / MAP (the right stick click, routed here by KhDualScreen). */
+    void toggleView() {
+        if (panel != null) panel.post(panel::toggleView);
+    }
+
     private static final class PanelView extends View {
-        // keybinds.ini: A=X B=Z Select=Right Shift Start=Return L=C R=V, d-pad = arrows.
-        private final Button bL = new Button("L", null, KeyEvent.KEYCODE_C);
-        private final Button bR = new Button("R", null, KeyEvent.KEYCODE_V);
-        private final Button bA = new Button("A", null, KeyEvent.KEYCODE_X);
-        private final Button bB = new Button("B", null, KeyEvent.KEYCODE_Z);
-        private final Button bSelect = new Button("SELECT", null, KeyEvent.KEYCODE_SHIFT_RIGHT);
-        private final Button bStart = new Button("START", null, KeyEvent.KEYCODE_ENTER);
-        private final Button bUp = new Button("▲", null, KeyEvent.KEYCODE_DPAD_UP);
-        private final Button bDown = new Button("▼", null, KeyEvent.KEYCODE_DPAD_DOWN);
-        private final Button bLeft = new Button("◀", null, KeyEvent.KEYCODE_DPAD_LEFT);
-        private final Button bRight = new Button("▶", null, KeyEvent.KEYCODE_DPAD_RIGHT);
-        private final Button bMenu = new Button("MENU", KhNative::toggleMenu);
         private final Button bView = new Button("MAP", this::toggleView);
-        private final Button[] padButtons = {bL, bR, bA, bB, bSelect, bStart, bUp, bDown, bLeft, bRight, bMenu, bView};
-        private final Button[] deckButtons = {bMenu, bView};
-        private Button[] buttons = deckButtons;   // deck view first: the Thor has physical buttons
-        // DECK (battle cards during a battle), MAP (floor map), PAD (touch controls + RAM watches).
-        private static final int VIEW_DECK = 0, VIEW_MAP = 1, VIEW_PAD = 2;
-        private static final String[] VIEW_NAMES = {"DECK", "MAP", "PAD"};
+        private final Button[] buttons = {bView};   // the only touch button: everything else is physical
+        // DECK (battle cards during a battle) and MAP (floor map).
+        private static final int VIEW_DECK = 0, VIEW_MAP = 1;
+        private static final String[] VIEW_NAMES = {"DECK", "MAP"};
         private int view = VIEW_DECK;
         private final int[] map = new int[4 + 32];
         private int mapCount;
@@ -165,7 +105,6 @@ final class KhBottomPresentation extends Presentation {
         private int pickupCount;
 
         private final SparseArray<Button> pointerOwner = new SparseArray<>();
-        private final List<Watch> watches;
         private final int[] snap = new int[66];
         private int snapCount;
         private final int[] deck = new int[5 + 99 + 20];
@@ -206,9 +145,8 @@ final class KhBottomPresentation extends Presentation {
             }
         };
 
-        PanelView(Context c, List<Watch> watches, KhRomArt art) {
+        PanelView(Context c, KhRomArt art) {
             super(c);
-            this.watches = watches;
             this.art = art;
             pixel.setFilterBitmap(false);   // keep the game's pixel art crisp when scaled
             text.setColor(Color.WHITE);
@@ -234,7 +172,6 @@ final class KhBottomPresentation extends Presentation {
         private void toggleView() {
             releaseAll();
             view = (view + 1) % VIEW_NAMES.length;
-            buttons = view == VIEW_PAD ? padButtons : deckButtons;
             bView.label = VIEW_NAMES[(view + 1) % VIEW_NAMES.length];
             invalidate();
         }
@@ -298,31 +235,11 @@ final class KhBottomPresentation extends Presentation {
         protected void onSizeChanged(int w, int h, int ow, int oh) {
             float u = unit();
             float pad = u * 0.25f, bar = headerHeight();
-            float content = barHeight();
-            if (art != null) {
-                // Header: deck panel on the left, MENU over the view toggle on the right.
-                float left = Math.max(pad + KhRomArt.PANEL_WIDTH * gbaScale() + pad, w - u * 3.4f);
-                float mid = bar / 2;
-                bMenu.rect.set(left, pad, w - pad, mid - pad / 2);
-                bView.rect.set(left, mid + pad / 2, w - pad, bar - pad);
-            } else {
-                // Status bar: text on the left, VIEW toggle and MENU on the right.
-                bView.rect.set(w - u * 2.6f, pad, w - pad, bar - pad);
-                bMenu.rect.set(w - u * 5.2f, pad, w - u * 2.85f, bar - pad);
-            }
-            // Pad view: shoulders under the bar, d-pad bottom left, A/B bottom right.
-            bL.rect.set(pad, content + pad, w * 0.3f, content + pad + u * 1.5f);
-            bR.rect.set(w * 0.7f, content + pad, w - pad, content + pad + u * 1.5f);
-            float cy = h - u * 3.4f, cx = u * 3.6f, s = u * 1.45f;
-            bUp.rect.set(cx - s / 2, cy - s * 1.5f, cx + s / 2, cy - s / 2);
-            bDown.rect.set(cx - s / 2, cy + s / 2, cx + s / 2, cy + s * 1.5f);
-            bLeft.rect.set(cx - s * 1.5f, cy - s / 2, cx - s / 2, cy + s / 2);
-            bRight.rect.set(cx + s / 2, cy - s / 2, cx + s * 1.5f, cy + s / 2);
-            float ax = w - u * 2.2f, bx = w - u * 4.6f, r = u * 1.0f;
-            bA.rect.set(ax - r, cy - r * 1.6f, ax + r, cy + r * 0.4f);
-            bB.rect.set(bx - r, cy - r * 0.4f, bx + r, cy + r * 1.6f);
-            bSelect.rect.set(w * 0.36f, h - u * 1.4f, w * 0.49f, h - pad * 2);
-            bStart.rect.set(w * 0.51f, h - u * 1.4f, w * 0.64f, h - pad * 2);
+            // Header: deck panel on the left, the DECK / MAP toggle on the right.
+            float left = art != null ? Math.max(pad + KhRomArt.PANEL_WIDTH * gbaScale() + pad, w - u * 3.4f)
+                : w - u * 2.6f;
+            float bh = Math.min(bar - 2 * pad, u * 1.3f);
+            bView.rect.set(left, (bar - bh) / 2, w - pad, (bar + bh) / 2);
             mono.setTextSize(u * 0.42f);
         }
 
@@ -344,13 +261,17 @@ final class KhBottomPresentation extends Presentation {
         @Override
         protected void onDraw(Canvas canvas) {
             float w = getWidth(), h = getHeight(), u = unit(), bar = barHeight();
+            if (!gameStarted()) {                  // boot, intro, title, file select: just the logo
+                drawTitleLogo(canvas, w, h);
+                return;
+            }
             drawStatusStrip(canvas, w, u);
             if (!drawHeaderPanel(canvas, u)) {
                 text.setTextAlign(Paint.Align.LEFT);
                 text.setTextSize(u * 0.55f);
-                // Ellipsize so the status never runs under the MENU / view buttons.
+                // Ellipsize so the status never runs under the view button.
                 String status = statusLine();
-                float room = bMenu.rect.left - u * 0.7f;
+                float room = bView.rect.left - u * 0.7f;
                 int fit = text.breakText(status, true, room, null);
                 if (fit < status.length()) status = status.substring(0, Math.max(0, fit - 1)) + "\u2026";
                 canvas.drawText(status, u * 0.4f, bar / 2 - (text.descent() + text.ascent()) / 2, text);
@@ -361,13 +282,12 @@ final class KhBottomPresentation extends Presentation {
                 handMotion.reset();
                 cursorGlow.setEmpty();
             }
-            if (handLive() && view != VIEW_PAD) drawHand(canvas, w, h, u, bar);   // battles always show cards
+            if (handLive()) drawHand(canvas, w, h, u, bar);   // battles always show cards
             else if (view == VIEW_DECK) {
                 drawDeck(canvas, w, h, u, bar);
                 drawCloseup(canvas, w, h, u, bar);
             }
             else if (view == VIEW_MAP) drawMap(canvas, w, h, u, bar);
-            else drawWatches(canvas, w, u, bar);
             text.setTextSize(u * 0.55f);
             drawStatusCard(canvas, w, h, u);
             for (Button b : buttons) drawButton(canvas, b);
@@ -843,6 +763,31 @@ final class KhBottomPresentation extends Presentation {
             }
         }
 
+        /**
+         * A game is in progress once the floor state has a created room (RestoreMapProgress after
+         * loading a save, or a new game reaching its first floor) or a battle list is live.
+         * Before that (boot, intro, title, file select) the bottom screen shows the title logo.
+         */
+        private boolean gameStarted() {
+            if (handLive()) return true;
+            if (mapCount < 36 || map[1] < 0) return false;
+            int cur = map[3];
+            return cur >= 0 && cur < 32 && (map[4 + cur] & KhRomArt.FLOOR_ROOM_CREATED) != 0;
+        }
+
+        /** The game's title logo, centred at the largest integer scale that fits. */
+        private void drawTitleLogo(Canvas canvas, float w, float h) {
+            Bitmap logo = art == null ? null : art.titleLogo();
+            if (logo == null) {
+                gameText(canvas, "Kingdom Hearts: Chain of Memories", w / 2, h / 2 - 20, 3, 0, w);
+                return;
+            }
+            int scale = (int) Math.max(1, Math.min(w * 0.9f / logo.getWidth(), h * 0.8f / logo.getHeight()));
+            float lw = logo.getWidth() * scale, lh = logo.getHeight() * scale;
+            float left = (w - lw) / 2, top = (h - lh) / 2;
+            canvas.drawBitmap(logo, null, new RectF(left, top, left + lw, top + lh), pixel);
+        }
+
         private static final String[] WORLD_NAMES = {
             "Castle Oblivion", "Agrabah", "Atlantica", "Olympus Coliseum", "Wonderland", "Monstro",
             "Halloween Town", "Neverland", "Hollow Bastion", "Destiny Islands", "Traverse Town",
@@ -945,16 +890,6 @@ final class KhBottomPresentation extends Presentation {
             gameText(canvas, state, left + tw / 2, top + u * 0.15f + 13 * s, s, 0, tw);
         }
 
-        /** Pad view middle: guest RAM words from bottom_screen_watches.txt. */
-        private void drawWatches(Canvas canvas, float w, float u, float bar) {
-            float y = bar + u * 2.6f;
-            for (int i = 0; i < watches.size() && 2 + i < snapCount && y < getHeight() - u * 5.5f; i++) {
-                String line = String.format("%-18s 0x%08X  %d", watches.get(i).label, snap[2 + i], snap[2 + i]);
-                canvas.drawText(line, u * 0.8f, y, mono);
-                y += u * 0.55f;
-            }
-        }
-
         private Button hit(float x, float y) {
             for (Button b : buttons) {
                 RectF r = b.rect;
@@ -999,6 +934,7 @@ final class KhBottomPresentation extends Presentation {
 
         private void tapCard(float x, float y) {
             long now = android.os.SystemClock.uptimeMillis();
+            if (!gameStarted()) return;
             if (statusOpen) {                             // any tap closes the status card
                 statusOpen = false;
                 return;
@@ -1013,7 +949,7 @@ final class KhBottomPresentation extends Presentation {
                 closeupId = -1;
                 return;
             }
-            if (handLive() && view != VIEW_PAD) {
+            if (handLive()) {
                 int slot = handMotion.hit(x, y);
                 if (slot < 0) return;
                 if (slot == hand[3]) {
