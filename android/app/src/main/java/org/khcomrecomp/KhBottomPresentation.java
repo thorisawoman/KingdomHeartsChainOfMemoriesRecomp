@@ -158,6 +158,10 @@ final class KhBottomPresentation extends Presentation {
         private final RectF cursorGlow = new RectF();
         private boolean animating;
         private final int[] pickups = new int[1 + 16];
+        private final int[] status = new int[9];
+        private int statusCount;
+        private float hpShown = -1, hpTrail = -1;   // eased gauge value and damage trail
+        private boolean statusOpen;
         private int pickupCount;
 
         private final SparseArray<Button> pointerOwner = new SparseArray<>();
@@ -188,6 +192,7 @@ final class KhBottomPresentation extends Presentation {
                     handCount = KhNative.handSnapshot(hand);
                     mapCount = KhNative.mapSnapshot(map);
                     pickupCount = KhNative.pickupSnapshot(pickups);
+                    statusCount = KhNative.statusSnapshot(status);
                 } catch (UnsatisfiedLinkError notYet) {
                     snapCount = 0;
                     deckCount = 0;
@@ -240,10 +245,17 @@ final class KhBottomPresentation extends Presentation {
         private int gbaScale() { return Math.max(2, getWidth() / 300); }
 
         /** Height of the header shared by both views: the deck panel when art is available. */
-        private float barHeight() {
+        /** Header (deck panel + MENU / view buttons) only. */
+        private float headerHeight() {
             if (art == null) return unit() * 1.4f;
             return KhRomArt.PANEL_HEIGHT * gbaScale() + unit() * 0.5f;
         }
+
+        /** Height of Sora's status strip under the header. */
+        private float statusHeight() { return unit() * 1.0f; }
+
+        /** Everything above the view content: header plus status strip. */
+        private float barHeight() { return headerHeight() + statusHeight(); }
 
         // Game-font colours: dialogue white with its dark shadow (gDialogBoxPalette 1 / 2).
         private static final int TEXT_BODY = 0xFFF8F8F8, TEXT_SHADOW = 0xFF404040;
@@ -285,7 +297,8 @@ final class KhBottomPresentation extends Presentation {
         @Override
         protected void onSizeChanged(int w, int h, int ow, int oh) {
             float u = unit();
-            float pad = u * 0.25f, bar = barHeight();
+            float pad = u * 0.25f, bar = headerHeight();
+            float content = barHeight();
             if (art != null) {
                 // Header: deck panel on the left, MENU over the view toggle on the right.
                 float left = Math.max(pad + KhRomArt.PANEL_WIDTH * gbaScale() + pad, w - u * 3.4f);
@@ -298,8 +311,8 @@ final class KhBottomPresentation extends Presentation {
                 bMenu.rect.set(w - u * 5.2f, pad, w - u * 2.85f, bar - pad);
             }
             // Pad view: shoulders under the bar, d-pad bottom left, A/B bottom right.
-            bL.rect.set(pad, bar + pad, w * 0.3f, bar + pad + u * 1.5f);
-            bR.rect.set(w * 0.7f, bar + pad, w - pad, bar + pad + u * 1.5f);
+            bL.rect.set(pad, content + pad, w * 0.3f, content + pad + u * 1.5f);
+            bR.rect.set(w * 0.7f, content + pad, w - pad, content + pad + u * 1.5f);
             float cy = h - u * 3.4f, cx = u * 3.6f, s = u * 1.45f;
             bUp.rect.set(cx - s / 2, cy - s * 1.5f, cx + s / 2, cy - s / 2);
             bDown.rect.set(cx - s / 2, cy + s / 2, cx + s / 2, cy + s * 1.5f);
@@ -331,6 +344,7 @@ final class KhBottomPresentation extends Presentation {
         @Override
         protected void onDraw(Canvas canvas) {
             float w = getWidth(), h = getHeight(), u = unit(), bar = barHeight();
+            drawStatusStrip(canvas, w, u);
             if (!drawHeaderPanel(canvas, u)) {
                 text.setTextAlign(Paint.Align.LEFT);
                 text.setTextSize(u * 0.55f);
@@ -355,6 +369,7 @@ final class KhBottomPresentation extends Presentation {
             else if (view == VIEW_MAP) drawMap(canvas, w, h, u, bar);
             else drawWatches(canvas, w, u, bar);
             text.setTextSize(u * 0.55f);
+            drawStatusCard(canvas, w, h, u);
             for (Button b : buttons) drawButton(canvas, b);
             if (animating) postInvalidateOnAnimation();
         }
@@ -710,6 +725,106 @@ final class KhBottomPresentation extends Presentation {
             animating = true;   // battle view redraws every frame (cursor bob, motion)
         }
 
+        // ---- Sora's status ---------------------------------------------------------------------
+
+        private int hpColour(float frac) {
+            return frac > 0.5f ? 0xFF58D068 : frac > 0.25f ? 0xFFE8C45A : 0xFFE05050;
+        }
+
+        /** HP gauge in r: eased fill, a fading trail after damage, pulsing when low. */
+        private void drawHpGauge(Canvas canvas, RectF r, int hp, int maxHp, long now) {
+            float frac = maxHp > 0 ? Math.max(0, Math.min(1, hp / (float) maxHp)) : 0;
+            if (hpShown < 0) hpShown = hpTrail = frac;
+            hpShown += (frac - hpShown) * 0.25f;            // fill catches up quickly
+            if (frac < hpTrail) hpTrail += (frac - hpTrail) * 0.04f; else hpTrail = frac;   // trail lingers
+            if (Math.abs(hpShown - frac) > 0.002f || Math.abs(hpTrail - frac) > 0.002f) animating = true;
+            float rr = r.height() / 2;
+            fill.setColor(art != null ? art.panelColour(0xA) : 0xFF101425);
+            canvas.drawRoundRect(r, rr, rr, fill);
+            float inset = Math.max(2f, r.height() * 0.14f);
+            RectF in = new RectF(r.left + inset, r.top + inset, r.right - inset, r.bottom - inset);
+            float wv = in.width();
+            fill.setColor(0xFFF0F0F0);
+            canvas.drawRoundRect(in.left, in.top, in.left + wv * hpTrail, in.bottom, rr, rr, fill);
+            int col = hpColour(frac);
+            if (frac <= 0.25f) {                              // low HP: pulse
+                float k = 0.5f + 0.5f * (float) Math.sin(now / 160.0);
+                col = blend(col, 0xFFFFFFFF, k * 0.45f);
+                animating = true;
+            }
+            fill.setColor(col);
+            canvas.drawRoundRect(in.left, in.top, in.left + wv * hpShown, in.bottom, rr, rr, fill);
+        }
+
+        private static int blend(int a, int b, float t) {
+            int ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+            int br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+            return 0xFF000000 | (int) (ar + (br - ar) * t) << 16 | (int) (ag + (bg - ag) * t) << 8 | (int) (ab + (bb - ab) * t);
+        }
+
+        /** Strip under the header: Lv, HP gauge with numbers, CP and EXP. Tap for details. */
+        private void drawStatusStrip(Canvas canvas, float w, float u) {
+            if (statusCount < 9 || status[2] <= 0) return;
+            long now = android.os.SystemClock.uptimeMillis();
+            float top = headerHeight(), hgt = statusHeight();
+            int s = Math.max(2, gbaScale() - 1);
+            float ty = top + (hgt - 12 * s) / 2;
+            float x = u * 0.3f;
+            x += gameText(canvas, "Lv " + status[3], x, ty, s, -1, w) + u * 0.5f;
+            x += gameText(canvas, "HP", x, ty, s, -1, w) + u * 0.2f;
+            float gaugeW = w * 0.32f;
+            RectF g = new RectF(x, top + hgt * 0.28f, x + gaugeW, top + hgt * 0.72f);
+            drawHpGauge(canvas, g, status[1], status[2], now);
+            x += gaugeW + u * 0.25f;
+            x += gameText(canvas, status[1] + "/" + status[2], x, ty, s, -1, w) + u * 0.6f;
+            x += gameText(canvas, "CP " + status[4], x, ty, s, -1, w) + u * 0.6f;
+            gameText(canvas, "EXP " + status[5] + "/" + status[6], x, ty, s, -1, w - x - u * 0.3f);
+        }
+
+        /** Tapped-open status card: level, HP, CP, EXP progress, moogle points, sleights. */
+        private void drawStatusCard(Canvas canvas, float w, float h, float u) {
+            if (!statusOpen) return;
+            if (statusCount < 9) {
+                statusOpen = false;
+                return;
+            }
+            long now = android.os.SystemClock.uptimeMillis();
+            fill.setColor(0xC0000000);
+            canvas.drawRect(0, barHeight(), w, h, fill);
+            float pw = w * 0.78f, ph = (h - barHeight()) * 0.82f;
+            RectF p = new RectF((w - pw) / 2, barHeight() + (h - barHeight() - ph) / 2, (w + pw) / 2, 0);
+            p.bottom = p.top + ph;
+            int edge = gbaScale();
+            fill.setColor(art != null ? art.panelColour(0xA) : 0xFF101425);
+            canvas.drawRoundRect(p, edge * 4, edge * 4, fill);
+            fill.setColor(art != null ? art.panelColour(0xD) : 0xFF262B4A);
+            canvas.drawRoundRect(p.left + edge, p.top + edge, p.right - edge, p.bottom - edge, edge * 4, edge * 4, fill);
+            int s = gbaScale();
+            float x = p.left + u * 0.6f, y = p.top + u * 0.5f, line = 15 * s;
+            gameText(canvas, "Sora  \u00B7  Level " + status[3] + (status[0] == 1 ? "  \u00B7  In battle" : ""), x, y, s, -1, pw);
+            y += line * 1.3f;
+            RectF g = new RectF(x, y, p.right - u * 0.6f, y + line * 0.8f);
+            drawHpGauge(canvas, g, status[1], status[2], now);
+            y += line;
+            gameText(canvas, "HP  " + status[1] + " / " + status[2], x, y, s, -1, pw);
+            y += line * 1.3f;
+            gameText(canvas, "CP  " + status[4], x, y, s, -1, pw);
+            y += line * 1.3f;
+            int exp = status[5], next = Math.max(1, status[6]);
+            gameText(canvas, "EXP  " + exp + "  \u00B7  next level at " + next, x, y, s, -1, pw);
+            y += line;
+            RectF e = new RectF(x, y, p.right - u * 0.6f, y + line * 0.5f);
+            fill.setColor(art != null ? art.panelColour(0xA) : 0xFF101425);
+            canvas.drawRoundRect(e, e.height() / 2, e.height() / 2, fill);
+            fill.setColor(0xFF5C9CF0);
+            canvas.drawRoundRect(e.left, e.top, e.left + e.width() * Math.min(1f, exp / (float) next), e.bottom,
+                e.height() / 2, e.height() / 2, fill);
+            y += line * 1.1f;
+            gameText(canvas, "Moogle points  " + status[7], x, y, s, -1, pw);
+            y += line * 1.3f;
+            gameText(canvas, "Sleights learned  " + status[8], x, y, s, -1, pw);
+        }
+
         private static final String[] WORLD_NAMES = {
             "Castle Oblivion", "Agrabah", "Atlantica", "Olympus Coliseum", "Wonderland", "Monstro",
             "Halloween Town", "Neverland", "Hollow Bastion", "Destiny Islands", "Traverse Town",
@@ -807,6 +922,15 @@ final class KhBottomPresentation extends Presentation {
 
         private void tapCard(float x, float y) {
             long now = android.os.SystemClock.uptimeMillis();
+            if (statusOpen) {                             // any tap closes the status card
+                statusOpen = false;
+                return;
+            }
+            if (y >= headerHeight() && y < barHeight() && statusCount >= 9) {
+                statusOpen = true;
+                performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);
+                return;
+            }
             if (closeupId >= 0) {                         // any tap dismisses the close-up
                 closeupId = -1;
                 return;

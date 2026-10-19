@@ -168,6 +168,51 @@ void track_pickups(PickupTracker& p) {
     }
 }
 
+// Sora's status (USA). PlayerProgression at gGameState + 0xF8 (u64 fields are 4-byte aligned by
+// agbcc); live battle HP from the player actor *(gBtlWork + 0x7C) (BtlObj hp +0x2C, maxHp +0x2E),
+// checked against battle dumps where it fell 80 -> 76 -> 70 -> 64 as Sora took hits.
+constexpr uint32_t kGameFieldHp = 0x32;           // s16 gGameState.hp
+constexpr uint32_t kProgression = 0xF8;           // PlayerProgression
+constexpr uint32_t kProgMaxHp = 0x0, kProgCp = 0x2, kProgExp = 0x8, kProgNextExp = 0xC, kProgLevel = 0x10;
+constexpr uint32_t kProgLearnedStocks = 0x14;     // u64 x 2
+constexpr uint32_t kProgMooglePoints = 0x7C;      // u32
+constexpr uint32_t kBtlWorkPtr = 0x02039B84;      // BtlWork* gBtlWork
+constexpr uint32_t kBtlWorkPlayer = 0x7C;         // BtlObj* (Sora)
+constexpr uint32_t kBtlObjHp = 0x2C, kBtlObjMaxHp = 0x2E;
+
+struct StatusSnapshot {
+    int in_battle = 0, hp = 0, max_hp = 0, level = 0, cp = 0, exp = 0, next_exp = 0, moogle = 0, sleights = 0;
+};
+StatusSnapshot g_status;
+
+bool in_ewram(uint32_t addr, uint32_t size);
+
+void read_status(StatusSnapshot& st, bool battle) {
+    const uint32_t prog = kGameState + kProgression;
+    st.max_hp = static_cast<int16_t>(bus_read_u16(prog + kProgMaxHp));
+    st.cp = static_cast<int16_t>(bus_read_u16(prog + kProgCp));
+    st.exp = static_cast<int>(bus_read_u32(prog + kProgExp));
+    st.next_exp = static_cast<int>(bus_read_u32(prog + kProgNextExp));
+    st.level = bus_read_u8(prog + kProgLevel);
+    st.moogle = static_cast<int>(bus_read_u32(prog + kProgMooglePoints));
+    st.sleights = 0;
+    for (uint32_t w = 0; w < 4; ++w) st.sleights += __builtin_popcount(bus_read_u32(prog + kProgLearnedStocks + 4 * w));
+    st.hp = static_cast<int16_t>(bus_read_u16(kGameState + kGameFieldHp));
+    st.in_battle = 0;
+    if (battle) {
+        const uint32_t work = bus_read_u32(kBtlWorkPtr);
+        const uint32_t actor = in_ewram(work, 0x80) ? bus_read_u32(work + kBtlWorkPlayer) : 0;
+        if (in_ewram(actor, 0x30)) {
+            const int max_hp = static_cast<int16_t>(bus_read_u16(actor + kBtlObjMaxHp));
+            if (max_hp > 0) {
+                st.hp = static_cast<int16_t>(bus_read_u16(actor + kBtlObjHp));
+                st.max_hp = max_hp;
+                st.in_battle = 1;
+            }
+        }
+    }
+}
+
 bool in_ewram(uint32_t addr, uint32_t size = 4) {
     return addr >= 0x02000000u && addr + size <= 0x02040000u;
 }
@@ -254,6 +299,7 @@ void on_poll() {
     }
     // Early boot (battle state unknown) waits, so the baseline is the loaded save, not uninitialised RAM.
     if (g_battle >= 0 && g_frame % kPickupEvery == 0) track_pickups(g_pickups);
+    if (g_frame % kHandEvery == 0) read_status(g_status, g_battle == 1);
     if (g_battle != 1) g_hand.valid = false;
     else if (g_frame % kHandEvery == 0) read_hand(g_hand);
 }
@@ -362,6 +408,21 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_pickupSnapshot(JNIEnv* env,
         n = 1 + g_pickups.count;
     }
     n = std::min<int>(n, env->GetArrayLength(out));
+    env->SetIntArrayRegion(out, 0, n, buf.data());
+    return n;
+}
+
+// Sora's status: out = [in battle (0/1), hp, max hp, level, cp, exp, next exp, moogle points,
+// sleights learned]; returns entries written.
+JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_statusSnapshot(JNIEnv* env, jclass, jintArray out) {
+    if (!out) return 0;
+    std::array<jint, 9> buf{};
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const StatusSnapshot& st = g_status;
+        buf = {st.in_battle, st.hp, st.max_hp, st.level, st.cp, st.exp, st.next_exp, st.moogle, st.sleights};
+    }
+    const jsize n = std::min<jsize>(env->GetArrayLength(out), static_cast<jsize>(buf.size()));
     env->SetIntArrayRegion(out, 0, n, buf.data());
     return n;
 }

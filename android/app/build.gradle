@@ -9,8 +9,8 @@ def gameRoot = file("../..")
 
 ext.gbaGame = [
     applicationId : "org.khcomrecomp.android",
-    versionCode   : 11,
-    versionName   : "0.11-polish",
+    versionCode   : 12,
+    versionName   : "0.12-status",
     title         : "Kingdom Hearts: Chain of Memories",
     romLabel      : "Kingdom Hearts: Chain of Memories (USA) ROM",
     romSha1       : ["10729bd884f8fdca7a310b6d606c52e46657aa48"],

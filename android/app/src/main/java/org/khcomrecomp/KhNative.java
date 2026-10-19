@@ -39,6 +39,12 @@ final class KhNative {
     static native int mapSnapshot(int[] out);
 
     /**
+     * Sora's status: out = [in battle (0/1), hp, max hp, level, cp, exp, next exp,
+     * moogle points, sleights learned]; returns count.
+     */
+    static native int statusSnapshot(int[] out);
+
+    /**
      * Recently picked-up cards, newest last (rolling 16): out = [n, n entries
      * (card ID | 0x8000 premium)]; returns count.
      */
