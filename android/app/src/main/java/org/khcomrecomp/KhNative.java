@@ -31,4 +31,10 @@ final class KhNative {
      * ID 0xFFFE is the Reload card.
      */
     static native int handSnapshot(int[] out);
+
+    /**
+     * Floor map: out = [world, floor (-1 none), riku (0/1), current room, 32 rooms
+     * (flags | nameId << 16 | roomType << 24)]; returns count.
+     */
+    static native int mapSnapshot(int[] out);
 }

@@ -53,6 +53,30 @@ final class KhRomArt {
     static final int[] PANEL_NAME = {6, 10, 113, 24}, PANEL_CARDS = {12, 33, 57, 41}, PANEL_CP = {68, 33, 148, 41};
     /** Deck menu backdrop colour (gDeckMenuMap). */
     static final int BACKDROP = 0xFF000858;
+
+    // Floor map, as the allmap screen draws it (allmap.c / mode_allmap.c).
+    private static final int FLOOR_DEFS = 0x0984C868, RIKU_FLOOR_DEFS = 0x0984CBD0;  // MapFloorDef, 12 bytes
+    private static final int FLOOR_DEF_COUNT = 14;
+    private static final int ROOM_TILES = 0x0976B340;    // gAllmapRoomTiles: 18 shapes x 16 tiles (32x32)
+    private static final int ROOM_PALETTES = 0x0984A0F8; // gAllmapRoomPalettes[7]
+    private static final int MAP_BG_PALETTES = 0x09849F78; // gAllmapBgPalettes[8] (BG banks 8-15)
+    private static final int[] ROOM_SHAPE_ORDER = {0, 4, 2, 5, 3, 10, 9, 13, 1, 7, 8, 11, 6, 14, 12, 15};
+    private static final int[][] ROOM_STEP = {{1, -1}, {-1, 1}, {1, 1}, {-1, -1}};   // UR, DL, DR, UL
+    private static final int ROOM_NONE = 0xFF, ROOM_EXIT_HALL = 0xFD, ROOM_ENTRANCE_HALL = 0xFE;
+    static final int FLOOR_ROOM_VISITED = 0x2, FLOOR_ROOM_LOCKED = 0x4, FLOOR_ROOM_EVENT_DONE = 0x8;
+    private static final int EVENT_ROOM = 1, EVENT_HIDDEN_CHAMBER = 2, EVENT_BOSS_ROOM = 4, EVENT_END = 5;
+    /** Room cell spacing and size in GBA pixels. */
+    static final int ROOM_STEP_PX = 24, ROOM_SIZE_PX = 32;
+
+    /** One floor's rooms: grid position (-1 when unreachable), links and event-door data. */
+    static final class FloorLayout {
+        final int[] x = new int[32], y = new int[32];
+        final int[] links = new int[32 * 4];
+        final int[] eventKind = new int[32], eventSide = new int[32];
+        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE;
+        int width() { return (maxX - minX) * ROOM_STEP_PX + ROOM_SIZE_PX; }
+        int height() { return (maxY - minY) * ROOM_STEP_PX + ROOM_SIZE_PX; }
+    }
     private static final int CATEGORY_ENEMY = 3;
 
     /** The card's opaque area inside the 64x64 sprite canvas (same for every card). */
@@ -74,6 +98,8 @@ final class KhRomArt {
     private final SparseArray<Bitmap> backs = new SparseArray<>();
     private final SparseArray<Bitmap> panels = new SparseArray<>();
     private int[] panelColours;
+    private final SparseArray<FloorLayout> floors = new SparseArray<>();
+    private final SparseArray<int[]> mapPalettes = new SparseArray<>();
     private final Map<String, Bitmap> texts = new LinkedHashMap<String, Bitmap>(64, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Bitmap> eldest) { return size() > 160; }
@@ -193,6 +219,123 @@ final class KhRomArt {
         }
         panels.put(deck, b);
         return b;
+    }
+
+    /** The floor's room layout (AllmapAddRoom's walk from room 0), or null. */
+    synchronized FloorLayout floorLayout(int floor, boolean riku) {
+        if (floor < 0 || floor >= FLOOR_DEF_COUNT) return null;
+        int key = floor | (riku ? 0x100 : 0);
+        FloorLayout f = floors.get(key);
+        if (f != null) return f;
+        try {
+            int def = (riku ? RIKU_FLOOR_DEFS : FLOOR_DEFS) + 12 * floor;
+            int links = u32(def + 4), doors = u32(def + 8);
+            f = new FloorLayout();
+            for (int i = 0; i < 32 * 4; i++) f.links[i] = u8(links + i);
+            java.util.Arrays.fill(f.x, -1);
+            java.util.Arrays.fill(f.eventSide, -1);
+            for (int d = 0; d < 64; d++) {           // MapEventDoor list, 8 bytes each
+                int kind = u8(doors + 8 * d);
+                if (kind == EVENT_END) break;
+                int room = u8(doors + 8 * d + 2);
+                if (room < 32) {
+                    f.eventKind[room] = kind;
+                    f.eventSide[room] = u8(doors + 8 * d + 3);
+                }
+            }
+            place(f, 0, 32, 32);
+        } catch (IOException | RuntimeException bad) {
+            return null;
+        }
+        floors.put(key, f);
+        return f;
+    }
+
+    private static void place(FloorLayout f, int room, int x, int y) {
+        if (room >= 32 || f.x[room] >= 0) return;
+        f.x[room] = x;
+        f.y[room] = y;
+        f.minX = Math.min(f.minX, x);
+        f.maxX = Math.max(f.maxX, x);
+        f.minY = Math.min(f.minY, y);
+        f.maxY = Math.max(f.maxY, y);
+        for (int side = 0; side < 4; side++) {
+            int n = f.links[room * 4 + side];
+            if (((n + 3) & 0xFF) > 2) place(f, n, x + ROOM_STEP[side][0], y + ROOM_STEP[side][1]);
+        }
+    }
+
+    /** GetMapDoorFlags reduced to "is there a usable door" (present and not sealed). */
+    private static boolean doorExists(FloorLayout f, int[] roomFlags, int room, int side) {
+        int n = f.links[room * 4 + side];
+        if (n == ROOM_NONE) return false;
+        if (n == ROOM_EXIT_HALL || n == ROOM_ENTRANCE_HALL) return true;
+        if (n >= 32) return false;
+        int flags = roomFlags[n] & 0xFFFF;
+        if ((flags & (FLOOR_ROOM_EVENT_DONE | FLOOR_ROOM_LOCKED)) != 0) return false;
+        int kind = f.eventKind[n];
+        if (kind == EVENT_ROOM || kind == EVENT_BOSS_ROOM || kind == EVENT_HIDDEN_CHAMBER)
+            return f.eventSide[n] == side;
+        return true;
+    }
+
+    /**
+     * The floor map as the allmap screen draws it, in GBA pixels: room shape from its doors
+     * (SetupAllmapRoomDoors), palette from its state (AllmapDrawRoomTiles); the current room
+     * cycles through room palettes 2-4 with phase. roomFlags are the 32 MapFloorRoom flags.
+     */
+    synchronized Bitmap floorMap(FloorLayout f, int[] roomFlags, int current, int phase) {
+        try {
+            int w = f.width(), h = f.height();
+            int[] px = new int[w * h];
+            for (int parity = 0; parity < 2; parity++) {
+                for (int room = 0; room < 32; room++) {
+                    if (f.x[room] < 0 || (f.x[room] & 1) != parity) continue;
+                    int flags = roomFlags[room] & 0xFFFF;
+                    boolean visited = (flags & FLOOR_ROOM_VISITED) != 0, done = (flags & FLOOR_ROOM_EVENT_DONE) != 0;
+                    boolean event = f.eventKind[room] == EVENT_ROOM || f.eventKind[room] == EVENT_BOSS_ROOM;
+                    int shape;
+                    if (event && done) shape = 17;
+                    else if (!visited) shape = event ? 1 : 0;
+                    else {
+                        int mask = 0;
+                        for (int side = 0; side < 4; side++) if (doorExists(f, roomFlags, room, side)) mask |= 1 << side;
+                        shape = ROOM_SHAPE_ORDER[mask] + 1;
+                    }
+                    int bank;
+                    if (visited || done) {
+                        if (room == current) bank = 2 + new int[] {0, 1, 2, 1}[phase & 3];
+                        else bank = shape == 1 ? 1 : shape == 17 ? 15 : 0;
+                    } else {
+                        bank = shape == 1 || shape == 17 ? 15 : 14;
+                    }
+                    int[] colours = mapPalette(bank);
+                    int ox = (f.x[room] - f.minX) * ROOM_STEP_PX, oy = (f.y[room] - f.minY) * ROOM_STEP_PX;
+                    for (int t = 0; t < 16; t++) {
+                        int tile = ROOM_TILES + 32 * (shape * 16 + t);
+                        for (int py = 0; py < 8; py++) {
+                            for (int qx = 0; qx < 8; qx++) {
+                                int b8 = u8(tile + py * 4 + qx / 2);
+                                int v = (qx & 1) != 0 ? b8 >> 4 : b8 & 15;
+                                if (v != 0) px[(oy + (t / 4) * 8 + py) * w + ox + (t % 4) * 8 + qx] = colours[v];
+                            }
+                        }
+                    }
+                }
+            }
+            return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+        } catch (IOException | RuntimeException bad) {
+            return null;
+        }
+    }
+
+    private int[] mapPalette(int bank) throws IOException {
+        int[] p = mapPalettes.get(bank);
+        if (p == null) {
+            p = palette(bank < 7 ? ROOM_PALETTES + 32 * bank : MAP_BG_PALETTES + 32 * (bank - 8));
+            mapPalettes.put(bank, p);
+        }
+        return p;
     }
 
     /** Pixel width of s in the game font (characters outside 32-255 count as '?'). */

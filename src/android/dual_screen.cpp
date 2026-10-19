@@ -2,6 +2,7 @@
 
 #include <jni.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -92,6 +93,36 @@ struct HandSnapshot {
 };
 HandSnapshot g_hand;
 
+// Floor map state (USA), located through CopyMapProgress (0x080E92B8) and GetMapFloorDef
+// (0x080DED64); MapFloorState / MapFloorRoom layout from the decompilation.
+constexpr uint32_t kGameState = 0x02039BB0;        // gGameState
+constexpr uint32_t kGameFlags = 0x8;               // u32, 0x8 = playing as Riku
+constexpr uint32_t kGameWorld = 0xC;               // u8
+constexpr uint32_t kGameFloor = 0xE;               // s8
+constexpr uint32_t kMapFloorState = 0x0203C590;    // gMapFloorState
+constexpr uint32_t kFloorCurrentRoom = 0x6;        // u8
+constexpr uint32_t kFloorRooms = 0x1C;             // MapFloorRoom rooms[32], 0x10 bytes each
+constexpr uint32_t kFloorRoomSize = 0x10;          // u16 flags, u32 seed, u8 nameId, roomType, ...
+constexpr int kFloorRoomCount = 32;
+
+struct MapSnapshot {
+    int world = -1, floor = -1, riku = 0, room = -1;
+    std::array<uint32_t, kFloorRoomCount> rooms{};   // flags | nameId << 16 | roomType << 24
+};
+MapSnapshot g_map;
+
+void read_map(MapSnapshot& m) {
+    m.world = bus_read_u8(kGameState + kGameWorld);
+    m.floor = static_cast<int8_t>(bus_read_u8(kGameState + kGameFloor));
+    m.riku = (bus_read_u32(kGameState + kGameFlags) & 0x8u) ? 1 : 0;
+    m.room = bus_read_u8(kMapFloorState + kFloorCurrentRoom);
+    for (int i = 0; i < kFloorRoomCount; ++i) {
+        const uint32_t r = kMapFloorState + kFloorRooms + static_cast<uint32_t>(i) * kFloorRoomSize;
+        m.rooms[i] = bus_read_u16(r) | static_cast<uint32_t>(bus_read_u8(r + 8)) << 16 |
+                     static_cast<uint32_t>(bus_read_u8(r + 9)) << 24;
+    }
+}
+
 bool in_ewram(uint32_t addr, uint32_t size = 4) {
     return addr >= 0x02000000u && addr + size <= 0x02040000u;
 }
@@ -161,7 +192,10 @@ void on_poll() {
     ++g_frame;
     g_battle = read_battle_context();
     for (int i = 0; i < g_watch_count; ++i) g_watch_values[i] = bus_read_u32(g_watch_addrs[i]);
-    if (g_frame % kDeckEvery == 0) read_deck(g_deck);
+    if (g_frame % kDeckEvery == 0) {
+        read_deck(g_deck);
+        read_map(g_map);
+    }
     if (g_battle != 1) g_hand.valid = false;
     else if (g_frame % kHandEvery == 0) read_hand(g_hand);
 }
@@ -253,6 +287,24 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_handSnapshot(JNIEnv* env, j
     }
     const jsize cap = env->GetArrayLength(out);
     if (n > cap) n = cap;
+    env->SetIntArrayRegion(out, 0, n, buf.data());
+    return n;
+}
+
+// Floor map: out = [world, floor (-1 none), riku (0/1), current room, 32 rooms
+// (flags | nameId << 16 | roomType << 24)]; returns entries written.
+JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_mapSnapshot(JNIEnv* env, jclass, jintArray out) {
+    if (!out) return 0;
+    std::array<jint, 4 + kFloorRoomCount> buf{};
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        buf[0] = g_map.world;
+        buf[1] = g_map.floor;
+        buf[2] = g_map.riku;
+        buf[3] = g_map.room;
+        for (int i = 0; i < kFloorRoomCount; ++i) buf[4 + i] = static_cast<jint>(g_map.rooms[i]);
+    }
+    const jsize n = std::min<jsize>(env->GetArrayLength(out), static_cast<jsize>(buf.size()));
     env->SetIntArrayRegion(out, 0, n, buf.data());
     return n;
 }

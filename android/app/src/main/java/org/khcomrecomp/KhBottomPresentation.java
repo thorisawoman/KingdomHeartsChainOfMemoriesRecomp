@@ -28,12 +28,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Bottom-screen panel with two views, switched from the status bar:
+ * Bottom-screen panel with three views, cycled from the header button:
  *
  * DECK (default) shows the equipped deck read live from guest RAM (see
  * src/android/dual_screen.cpp), drawn with the game's own card art (KhRomArt). During a battle it
  * switches to the battle card list: selected card outlined, used cards dimmed,
  * stocked cards marked.
+ *
+ * MAP shows the current floor the way the game's map screen draws it.
  *
  * PAD shows GBA buttons as touch targets. They inject the keyboard keys that
  * keybinds.ini maps to each button, so input reaches the game through its normal
@@ -142,16 +144,22 @@ final class KhBottomPresentation extends Presentation {
         private final Button bLeft = new Button("◀", null, KeyEvent.KEYCODE_DPAD_LEFT);
         private final Button bRight = new Button("▶", null, KeyEvent.KEYCODE_DPAD_RIGHT);
         private final Button bMenu = new Button("MENU", KhNative::toggleMenu);
-        private final Button bView = new Button("PAD", this::toggleView);
+        private final Button bView = new Button("MAP", this::toggleView);
         private final Button[] padButtons = {bL, bR, bA, bB, bSelect, bStart, bUp, bDown, bLeft, bRight, bMenu, bView};
         private final Button[] deckButtons = {bMenu, bView};
         private Button[] buttons = deckButtons;   // deck view first: the Thor has physical buttons
+        // DECK (battle cards during a battle), MAP (floor map), PAD (touch controls + RAM watches).
+        private static final int VIEW_DECK = 0, VIEW_MAP = 1, VIEW_PAD = 2;
+        private static final String[] VIEW_NAMES = {"DECK", "MAP", "PAD"};
+        private int view = VIEW_DECK;
+        private final int[] map = new int[4 + 32];
+        private int mapCount;
 
         private final SparseArray<Button> pointerOwner = new SparseArray<>();
         private final List<Watch> watches;
         private final int[] snap = new int[66];
         private int snapCount;
-        private final int[] deck = new int[5 + 99];
+        private final int[] deck = new int[5 + 99 + 20];
         private int deckCount;
         private final int[] hand = new int[7 + 99 + 15];
         private int handCount;
@@ -173,10 +181,12 @@ final class KhBottomPresentation extends Presentation {
                     snapCount = KhNative.snapshot(snap);
                     deckCount = KhNative.deckSnapshot(deck);
                     handCount = KhNative.handSnapshot(hand);
+                    mapCount = KhNative.mapSnapshot(map);
                 } catch (UnsatisfiedLinkError notYet) {
                     snapCount = 0;
                     deckCount = 0;
                     handCount = 0;
+                    mapCount = 0;
                 }
                 invalidate();
                 postDelayed(this, 100);
@@ -210,8 +220,9 @@ final class KhBottomPresentation extends Presentation {
 
         private void toggleView() {
             releaseAll();
-            buttons = buttons == deckButtons ? padButtons : deckButtons;
-            bView.label = buttons == deckButtons ? "PAD" : "DECK";
+            view = (view + 1) % VIEW_NAMES.length;
+            buttons = view == VIEW_PAD ? padButtons : deckButtons;
+            bView.label = VIEW_NAMES[(view + 1) % VIEW_NAMES.length];
             invalidate();
         }
 
@@ -323,10 +334,9 @@ final class KhBottomPresentation extends Presentation {
                 canvas.drawText(status, u * 0.4f, bar / 2 - (text.descent() + text.ascent()) / 2, text);
                 text.setTextAlign(Paint.Align.CENTER);
             }
-            if (buttons == deckButtons) {
-                if (handLive()) drawHand(canvas, w, h, u, bar);
-                else drawDeck(canvas, w, h, u, bar);
-            }
+            if (handLive() && view != VIEW_PAD) drawHand(canvas, w, h, u, bar);   // battles always show cards
+            else if (view == VIEW_DECK) drawDeck(canvas, w, h, u, bar);
+            else if (view == VIEW_MAP) drawMap(canvas, w, h, u, bar);
             else drawWatches(canvas, w, u, bar);
             text.setTextSize(u * 0.55f);
             for (Button b : buttons) drawButton(canvas, b);
@@ -580,6 +590,49 @@ final class KhBottomPresentation extends Presentation {
                     !reload && (id & KhCards.PREMIUM) != 0, i == cursor, (used || removed) && !stocked,
                     stocked ? "S" : null);
             }
+        }
+
+        private static final String[] WORLD_NAMES = {
+            "Castle Oblivion", "Agrabah", "Atlantica", "Olympus Coliseum", "Wonderland", "Monstro",
+            "Halloween Town", "Neverland", "Hollow Bastion", "Destiny Islands", "Traverse Town",
+            "Twilight Town", "Castle Oblivion", "100 Acre Wood",
+        };
+        private final int[] roomFlags = new int[32];
+        private Bitmap mapBitmap;
+        private String mapKey;
+
+        /**
+         * The current floor drawn like the game's map screen: visited rooms with their doors,
+         * unvisited rooms dimmed, event rooms marked, the current room pulsing. Title shows the
+         * world and floor.
+         */
+        private void drawMap(Canvas canvas, float w, float h, float u, float bar) {
+            int s = gbaScale();
+            boolean valid = mapCount >= 4 + 32 && map[1] >= 0;
+            KhRomArt.FloorLayout floor = valid && art != null ? art.floorLayout(map[1], map[2] != 0) : null;
+            if (floor == null || floor.x[0] < 0) {
+                gameText(canvas, art == null ? "Map needs the ROM" : "No floor map yet", w / 2,
+                    (bar + h) / 2 - s * 6, s, 0, w);
+                return;
+            }
+            String world = map[0] >= 0 && map[0] < WORLD_NAMES.length ? WORLD_NAMES[map[0]] : WORLD_NAMES[0];
+            String title = String.format("%s  \u00B7  Floor %d%s", world, map[1] + 1, map[2] != 0 ? "  \u00B7  Riku" : "");
+            float top = bar + u * 0.15f;
+            gameText(canvas, title, w / 2, top, s, 0, w - u);
+            top += 14 * s + u * 0.2f;
+            for (int i = 0; i < 32; i++) roomFlags[i] = map[4 + i] & 0xFFFF;
+            int phase = (int) ((android.os.SystemClock.uptimeMillis() / 200) % 4);
+            String key = map[1] + "/" + map[2] + "/" + map[3] + "/" + phase + "/" + java.util.Arrays.hashCode(roomFlags);
+            if (!key.equals(mapKey)) {
+                mapBitmap = art.floorMap(floor, roomFlags, map[3], phase);
+                mapKey = key;
+            }
+            if (mapBitmap == null) return;
+            float availW = w - u * 0.5f, availH = h - top - u * 0.25f;
+            int scale = (int) Math.max(1, Math.min(availW / mapBitmap.getWidth(), availH / mapBitmap.getHeight()));
+            float mw = mapBitmap.getWidth() * scale, mh = mapBitmap.getHeight() * scale;
+            float left = (w - mw) / 2, mtop = top + (availH - mh) / 2;
+            canvas.drawBitmap(mapBitmap, null, new RectF(left, mtop, left + mw, mtop + mh), pixel);
         }
 
         /** Pad view middle: guest RAM words from bottom_screen_watches.txt. */
