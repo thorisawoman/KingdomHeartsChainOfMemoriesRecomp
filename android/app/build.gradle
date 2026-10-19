@@ -9,8 +9,8 @@ def gameRoot = file("../..")
 
 ext.gbaGame = [
     applicationId : "org.khcomrecomp.android",
-    versionCode   : 15,
-    versionName   : "0.15-fixes",
+    versionCode   : 16,
+    versionName   : "0.16-saves",
     title         : "Kingdom Hearts: Chain of Memories",
     romLabel      : "Kingdom Hearts: Chain of Memories (USA) ROM",
     romSha1       : ["10729bd884f8fdca7a310b6d606c52e46657aa48"],
@@ -24,6 +24,8 @@ ext.gbaGame = [
     engineRoot    : new File(gameRoot, "gbarecomp"),
     recompUiRoot  : new File(gameRoot, "external/recomp-ui"),
     orientation   : "landscape",
+    // Bump whenever android/payload changes: the shell re-copies the payload only on a new version.
+    payloadVersion: "2",
     payloadDirs   : [
         [from: new File(gameRoot, "keybinds.ini"), into: "."],
         [from: new File(gameRoot, "external/recomp-ui/assets/common/fonts"), into: "assets/fonts"],

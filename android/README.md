@@ -75,6 +75,13 @@ On first launch the setup screen asks for your ROM (USA, SHA-1
 `300c20df6731a33952ded8c436f7f186d25d3492`). **The BIOS is required**: the runtime executes the real
 (recompiled) BIOS and will not boot without it, whatever the upstream README says.
 
+**Saves.** The game saves to 32 KB SRAM (Nintendo's `SRAM_F_V103` library; `save.c` writes from
+`0x0E000010`). Upstream's configs declared EEPROM, so in-game saves never left memory. All three
+configs now say `type = "sram"`, `size = 32768`. The save file is `files/roms/khcom_usa.sav` in app
+storage (`roms/<rom>.sav` on desktop), written about a second after each in-game save. Bump
+`payloadVersion` in `app/build.gradle` whenever `android/payload` changes, because the shell only
+re-copies the payload on a new version.
+
 **macOS desktop build** (for quick checks):
 
 ```bash
@@ -236,6 +243,7 @@ pid after any restart.
 | 0.13 | Start no longer opens the conversation log; BACK opens the settings menu |
 | 0.14 | Riku's battle cards; map door markers, room names and tap-a-room; sleight names in the status card |
 | 0.15 | New cards no longer counts cards returning after a battle; compact status card so sleight names fit |
+| 0.16 | **In-game saves work**: save type SRAM 32 KB (was EEPROM, so nothing was ever written) |
 
 Git: parent branch `android-thor-port`; submodule branches `gbarecomp/android-companion` and
 `external/gba-improvements/android-macos-host`. Nothing is pushed.

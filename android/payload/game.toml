@@ -15,8 +15,10 @@ sha1 = "300c20df6731a33952ded8c436f7f186d25d3492"
 hle = false
 
 [save]
-type = "eeprom"
-size = 8192
+# The game uses Nintendo's SRAM library (ROM string "SRAM_F_V103"; the decomp's save.c writes
+# 0x0E000010..). EEPROM here left every in-game save in memory only: nothing reached the .sav file.
+type = "sram"
+size = 32768
 
 [video]
 view_width = 284
