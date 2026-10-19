@@ -18,8 +18,8 @@ import java.util.Map;
  * A card is built the way the game's battle renderer (card_2) draws it, all at one
  * origin: the picture (gCardDefs[id].gfx / tiles / palette), the category border
  * (gCardBacks[category].gfx, gCard00Palette) over it, and the value digit
- * (gCardValueDigitFrames[value]) over that; enemy cards have no digit. Summon and
- * friend cards use the black border, as the prize-card code does. Addresses come
+ * (gCardValueDigitFrames[value]) over that; enemy cards have no digit. Borders follow the
+ * category for every card, friend and summon cards included, as in battle. Addresses come
  * from the pheenoh/khcom asset tables and were checked against the ROM.
  */
 final class KhRomArt {
@@ -31,7 +31,6 @@ final class KhRomArt {
     private static final int CARD_PALETTE = 0x09611AB8;   // gCard00Palette (borders, digits, backs)
     private static final int DIGIT_FRAMES = 0x09EE981C;   // gCardValueDigitFrames[15]
     private static final int DIGIT_TILES = 0x0905EAE8;    // gCardValueDigitTiles tile data
-    private static final int FLAG_SUMMON = 0x4, FLAG_FRIEND = 0x8;
 
     // Dialogue font (LayoutMsgGlyphs): glyph = character code 32-255, advance from
     // sLatinGlyphWidths, 16x16 tiles from the glyph's frame (gMsgLatinFontFrames[g][3]).
@@ -142,7 +141,7 @@ final class KhRomArt {
             int def = CARD_DEFS + id * CARD_DEF_SIZE;
             int gfx = u32(def), tiles = u32(def + 4), palette = u32(def + 8);
             int flags = u16(def + 30), value = u8(def + 32), category = u8(def + 42);
-            int back = (flags & (FLAG_SUMMON | FLAG_FRIEND)) != 0 ? CATEGORY_ENEMY : Math.min(category, 4);
+            int back = Math.min(category, 4);   // battle renderer (card_2): border by category
             int[] canvas = new int[CANVAS * CANVAS];
             int[] cardColours = palette(CARD_PALETTE);
             draw(canvas, gfx, tiles, palette(palette));

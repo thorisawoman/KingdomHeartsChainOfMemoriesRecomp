@@ -381,15 +381,15 @@ final class KhBottomPresentation extends Presentation {
             gameText(canvas, b.label, b.rect.centerX(), b.rect.centerY() - ts * 6.5f, ts, 0, b.rect.width() - 2 * edge);
         }
 
-        /** Deck name from the snapshot when it is plain ASCII, else null. */
+        /** Deck name from the snapshot (10 UTF-16LE characters in Deck.name), or null. */
         private String deckName() {
             if (deckCount < 5) return null;
             int base = 5 + Math.min(deck[4], deckCount - 5);
             StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < 20 && base + i < deckCount; i++) {
-                int c = deck[base + i] & 0xFF;
+            for (int i = 0; i + 1 < 20 && base + i + 1 < deckCount; i += 2) {
+                int c = (deck[base + i] & 0xFF) | (deck[base + i + 1] & 0xFF) << 8;
                 if (c == 0) break;
-                if (c < 32 || c > 126) return null;
+                if (c < 32 || c > 255) return null;
                 sb.append((char) c);
             }
             String name = sb.toString().trim();
@@ -412,8 +412,8 @@ final class KhBottomPresentation extends Presentation {
             String line;
             if (handLive()) {
                 String list = hand[2] > 0 && hand[2] < LIST_NAMES.length ? "  \u00B7  " + LIST_NAMES[hand[2]] : "";
-                line = String.format("%s%s  \u00B7  %d left  \u00B7  Stock %d",
-                    hand[1] == 1 ? "Riku" : "Sora", list, hand[4], hand[5]);
+                line = String.format("%s%d left  \u00B7  Stock %d%s", hand[1] == 1 ? "Riku  \u00B7  " : "",
+                    hand[4], hand[5], list);
             } else {
                 String name = deckName();
                 if (snapCount < 2 || snap[1] < 0) line = name != null ? name : "Waiting for the game";
