@@ -34,7 +34,7 @@ every game address it relies on and how each was verified, and what is left.
 - **MENU** opens the in-game settings menu.
 
 Verified on the device: deck view, battle list and motion, friend cards, New cards, tap-to-select
-and use, map, card art and font, status strip, BACK → settings menu.
+and use, map, card art and font, status strip, Start = pause only, BACK → settings menu.
 
 ---
 
