@@ -97,9 +97,10 @@ HandSnapshot g_hand;
 // (0x080DED64); MapFloorState / MapFloorRoom layout from the decompilation.
 constexpr uint32_t kGameState = 0x02039BB0;        // gGameState
 constexpr uint32_t kGameFlags = 0x8;               // u32, 0x8 = playing as Riku
-constexpr uint32_t kGameWorld = 0xC;               // u8
 constexpr uint32_t kGameFloor = 0xE;               // s8
 constexpr uint32_t kMapFloorState = 0x0203C590;    // gMapFloorState
+constexpr uint32_t kFloorWorld = 0x4;              // u8 WorldId of this floor (gGameState's world
+                                                   // byte is a stale default until a world is set)
 constexpr uint32_t kFloorCurrentRoom = 0x6;        // u8
 constexpr uint32_t kFloorRooms = 0x1C;             // MapFloorRoom rooms[32], 0x10 bytes each
 constexpr uint32_t kFloorRoomSize = 0x10;          // u16 flags, u32 seed, u8 nameId, roomType, ...
@@ -112,7 +113,7 @@ struct MapSnapshot {
 MapSnapshot g_map;
 
 void read_map(MapSnapshot& m) {
-    m.world = bus_read_u8(kGameState + kGameWorld);
+    m.world = bus_read_u8(kMapFloorState + kFloorWorld);
     m.floor = static_cast<int8_t>(bus_read_u8(kGameState + kGameFloor));
     m.riku = (bus_read_u32(kGameState + kGameFlags) & 0x8u) ? 1 : 0;
     m.room = bus_read_u8(kMapFloorState + kFloorCurrentRoom);
@@ -120,6 +121,41 @@ void read_map(MapSnapshot& m) {
         const uint32_t r = kMapFloorState + kFloorRooms + static_cast<uint32_t>(i) * kFloorRoomSize;
         m.rooms[i] = bus_read_u16(r) | static_cast<uint32_t>(bus_read_u8(r + 8)) << 16 |
                      static_cast<uint32_t>(bus_read_u8(r + 9)) << 24;
+    }
+}
+
+// Cards picked up during a battle. ObtainCard (card drops in battle, boss prizes) writes each
+// new card into the first empty gCardCollection slot (0xFFF) at pickup time, so the slots that
+// fill in after the battle started are this battle's pickups.
+constexpr uint16_t kCollectionEmpty = 0xFFF;
+constexpr int kMaxPickups = 16;
+constexpr uint32_t kPickupEvery = 6;
+
+struct PickupTracker {
+    bool armed = false;                                  // baseline taken for this battle
+    std::array<uint16_t, kCollectionSize> base{};
+    int count = 0;
+    std::array<uint16_t, kMaxPickups> cards{};
+};
+PickupTracker g_pickups;
+
+void track_pickups(PickupTracker& p, bool battle) {
+    if (!battle) {
+        p.armed = false;                                 // keep the list until the next battle
+        return;
+    }
+    if (!p.armed) {
+        for (int i = 0; i < kCollectionSize; ++i) p.base[i] = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
+        p.armed = true;
+        p.count = 0;
+        return;
+    }
+    for (int i = 0; i < kCollectionSize; ++i) {
+        if (p.base[i] != kCollectionEmpty) continue;
+        const uint16_t now = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
+        if (now == kCollectionEmpty) continue;
+        p.base[i] = now;
+        if (p.count < kMaxPickups) p.cards[p.count++] = now;
     }
 }
 
@@ -196,6 +232,7 @@ void on_poll() {
         read_deck(g_deck);
         read_map(g_map);
     }
+    if (g_battle != 1 || g_frame % kPickupEvery == 0 || !g_pickups.armed) track_pickups(g_pickups, g_battle == 1);
     if (g_battle != 1) g_hand.valid = false;
     else if (g_frame % kHandEvery == 0) read_hand(g_hand);
 }
@@ -287,6 +324,23 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_handSnapshot(JNIEnv* env, j
     }
     const jsize cap = env->GetArrayLength(out);
     if (n > cap) n = cap;
+    env->SetIntArrayRegion(out, 0, n, buf.data());
+    return n;
+}
+
+// Cards picked up in the current (or last) battle: out = [n, n collection entries
+// (card ID | 0x8000 premium)]; returns entries written.
+JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_pickupSnapshot(JNIEnv* env, jclass, jintArray out) {
+    if (!out) return 0;
+    std::array<jint, 1 + kMaxPickups> buf{};
+    int n;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        buf[0] = g_pickups.count;
+        for (int i = 0; i < g_pickups.count; ++i) buf[1 + i] = g_pickups.cards[i];
+        n = 1 + g_pickups.count;
+    }
+    n = std::min<int>(n, env->GetArrayLength(out));
     env->SetIntArrayRegion(out, 0, n, buf.data());
     return n;
 }

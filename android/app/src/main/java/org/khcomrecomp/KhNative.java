@@ -37,4 +37,10 @@ final class KhNative {
      * (flags | nameId << 16 | roomType << 24)]; returns count.
      */
     static native int mapSnapshot(int[] out);
+
+    /**
+     * Cards picked up in the current (or last) battle: out = [n, n entries
+     * (card ID | 0x8000 premium)]; returns count.
+     */
+    static native int pickupSnapshot(int[] out);
 }

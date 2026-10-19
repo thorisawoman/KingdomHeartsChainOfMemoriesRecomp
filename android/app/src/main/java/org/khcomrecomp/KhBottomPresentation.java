@@ -33,7 +33,7 @@ import java.util.List;
  * DECK (default) shows the equipped deck read live from guest RAM (see
  * src/android/dual_screen.cpp), drawn with the game's own card art (KhRomArt). During a battle it
  * switches to the battle card list: selected card outlined, used cards dimmed,
- * stocked cards marked.
+ * stocked cards marked, with the cards picked up during the battle along the bottom.
  *
  * MAP shows the current floor the way the game's map screen draws it.
  *
@@ -154,6 +154,8 @@ final class KhBottomPresentation extends Presentation {
         private int view = VIEW_DECK;
         private final int[] map = new int[4 + 32];
         private int mapCount;
+        private final int[] pickups = new int[1 + 16];
+        private int pickupCount;
 
         private final SparseArray<Button> pointerOwner = new SparseArray<>();
         private final List<Watch> watches;
@@ -182,11 +184,13 @@ final class KhBottomPresentation extends Presentation {
                     deckCount = KhNative.deckSnapshot(deck);
                     handCount = KhNative.handSnapshot(hand);
                     mapCount = KhNative.mapSnapshot(map);
+                    pickupCount = KhNative.pickupSnapshot(pickups);
                 } catch (UnsatisfiedLinkError notYet) {
                     snapCount = 0;
                     deckCount = 0;
                     handCount = 0;
                     mapCount = 0;
+                    pickupCount = 0;
                 }
                 invalidate();
                 postDelayed(this, 100);
@@ -550,6 +554,36 @@ final class KhBottomPresentation extends Presentation {
             }
         }
 
+        /**
+         * Cards picked up so far in this battle, newest last, along the bottom edge (the game
+         * adds them to the collection at pickup). Returns the height used, 0 when there are none.
+         */
+        private float drawPickups(Canvas canvas, float w, float h, float u) {
+            int n = pickupCount >= 1 ? Math.min(pickups[0], pickupCount - 1) : 0;
+            if (n == 0) return 0;
+            int s = gbaScale();
+            float cardHgt = u * 1.5f, cardW = cardHgt * KhRomArt.WIDTH / KhRomArt.HEIGHT;
+            float stripH = cardHgt + u * 0.5f, top = h - stripH;
+            fill.setColor(art != null ? art.panelColour(0xA) : 0xFF262B4A);
+            canvas.drawRect(0, top, w, top + Math.max(2f, s), fill);
+            float labelW = gameText(canvas, "Picked up", u * 0.3f, top + (stripH - 12 * s) / 2, s, -1, w / 3);
+            float x = u * 0.6f + labelW, gap = u * 0.12f;
+            int fit = Math.max(1, (int) ((w - x) / (cardW + gap)));
+            for (int i = Math.max(0, n - fit); i < n; i++) {   // newest stay visible
+                int entry = pickups[1 + i];
+                float y = top + (stripH - cardHgt) / 2 + u * 0.05f;
+                card.set(x, y, x + cardW, y + cardHgt);
+                Bitmap bmp = art == null ? null : art.card(entry & KhCards.ID_MASK);
+                if (bmp != null) canvas.drawBitmap(bmp, null, card, pixel);
+                else {
+                    tile.set(card);
+                    drawTile(canvas, entry & KhCards.ID_MASK, (entry & KhCards.PREMIUM) != 0, false, false, null, u);
+                }
+                x += cardW + gap;
+            }
+            return stripH;
+        }
+
         /** The equipped deck in deck order. */
         private void drawDeck(Canvas canvas, float w, float h, float u, float bar) {
             int n = deckCount >= 5 ? Math.min(deck[4], deckCount - 5) : 0;
@@ -578,7 +612,8 @@ final class KhBottomPresentation extends Presentation {
                 return;
             }
             float top = bar + u * 0.1f;
-            layoutCards(n, w, top, h, u);
+            float strip = drawPickups(canvas, w, h, u);
+            layoutCards(n, w, top, h - strip, u);
             int cursor = hand[3];
             for (int i = 0; i < n; i++) {
                 int slot = hand[7 + i];
