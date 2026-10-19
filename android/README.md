@@ -248,8 +248,18 @@ pid after any restart.
 | 0.17 | New cards ignores the collection swap when a save loads |
 | 0.18 | Title logo on the bottom screen until play starts; touch pad / PAD view / MENU removed; R3 switches DECK/MAP |
 
-Git: parent branch `android-thor-port`; submodule branches `gbarecomp/android-companion` and
-`external/gba-improvements/android-macos-host`. Nothing is pushed.
+Source: <https://github.com/thorisawoman/KingdomHeartsChainOfMemoriesRecomp> (branch
+`android-thor-port`, a fork of rafadono/KingdomHeartsChainOfMemoriesRecomp). The changed
+submodules are forks too: `gbarecomp` → thorisawoman/gbarecomp (`android-companion`) and
+`external/gba-improvements` → thorisawoman/gba-improvements (`android-macos-host`); `.gitmodules`
+points at them, so a recursive clone builds:
+
+```bash
+git clone --recursive -b android-thor-port https://github.com/thorisawoman/KingdomHeartsChainOfMemoriesRecomp.git
+```
+
+No APKs are published: every APK contains the recompiled game (`libmain.so`). Build your own and
+use your own ROM and BIOS.
 
 ---
 

@@ -1,9 +1,11 @@
 [submodule "gbarecomp"]
 	path = gbarecomp
-	url = https://github.com/mstan/gbarecomp.git
+	url = https://github.com/thorisawoman/gbarecomp.git
+	branch = android-companion
 [submodule "external/recomp-ui"]
 	path = external/recomp-ui
 	url = https://github.com/RetroPortingToolKit/recomp-ui.git
 [submodule "external/gba-improvements"]
 	path = external/gba-improvements
-	url = https://github.com/rafadono/gba-improvements.git
+	url = https://github.com/thorisawoman/gba-improvements.git
+	branch = android-macos-host
