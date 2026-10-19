@@ -154,6 +154,9 @@ final class KhBottomPresentation extends Presentation {
         private int view = VIEW_DECK;
         private final int[] map = new int[4 + 32];
         private int mapCount;
+        private final KhHandAnimator handMotion = new KhHandAnimator();
+        private final RectF cursorGlow = new RectF();
+        private boolean animating;
         private final int[] pickups = new int[1 + 16];
         private int pickupCount;
 
@@ -193,7 +196,7 @@ final class KhBottomPresentation extends Presentation {
                     pickupCount = 0;
                 }
                 invalidate();
-                postDelayed(this, 100);
+                postDelayed(this, handLive() ? 33 : 100);   // follow battles closely
             }
         };
 
@@ -338,12 +341,18 @@ final class KhBottomPresentation extends Presentation {
                 canvas.drawText(status, u * 0.4f, bar / 2 - (text.descent() + text.ascent()) / 2, text);
                 text.setTextAlign(Paint.Align.CENTER);
             }
+            animating = false;
+            if (!handLive()) {
+                handMotion.reset();
+                cursorGlow.setEmpty();
+            }
             if (handLive() && view != VIEW_PAD) drawHand(canvas, w, h, u, bar);   // battles always show cards
             else if (view == VIEW_DECK) drawDeck(canvas, w, h, u, bar);
             else if (view == VIEW_MAP) drawMap(canvas, w, h, u, bar);
             else drawWatches(canvas, w, u, bar);
             text.setTextSize(u * 0.55f);
             for (Button b : buttons) drawButton(canvas, b);
+            if (animating) postInvalidateOnAnimation();
         }
 
         /** A button in the deck panel's colours (fill 0xd, outline 0xa, pressed 0xb). */
@@ -504,53 +513,72 @@ final class KhBottomPresentation extends Presentation {
         }
 
         /** One card in grid cell i: the decoded card image, or a flat tile if art is unavailable. */
-        private void drawCard(Canvas canvas, int i, float top, float u, int id, boolean premium,
-                              boolean selected, boolean dim, String badge) {
+        /** Card rectangle of grid cell i (after layoutCards). */
+        private void cellRect(int i, float top, float u, RectF out) {
             float gap = u * 0.15f;
             float cx = gap / 2 + (i % gridCols) * cellW + cellW / 2;
             float y = top + (i / gridCols) * cellH + gap / 2;
             float cw = cardH * KhRomArt.WIDTH / KhRomArt.HEIGHT;
-            card.set(cx - cw / 2, y, cx + cw / 2, y + cardH);
+            out.set(cx - cw / 2, y, cx + cw / 2, y + cardH);
+        }
+
+        /** One card in grid cell i: the decoded card image, or a flat tile if art is unavailable. */
+        private void drawCard(Canvas canvas, int i, float top, float u, int id, boolean premium,
+                              boolean selected, boolean dim, String badge) {
+            cellRect(i, top, u, card);
+            if (selected) drawGlow(canvas, card, 0x55FFFFFF);
+            drawCardRect(canvas, card, u, id, premium, dim ? 70 : 255, badge, labelH > 0);
+        }
+
+        private void drawGlow(Canvas canvas, RectF r, int colour) {
+            fill.setColor(colour);
+            float pad = r.height() * 0.06f;
+            canvas.drawRoundRect(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad, pad * 2, pad * 2, fill);
+        }
+
+        /** The card image (or fallback tile) in r with alpha 0-255, optional badge and name label. */
+        private void drawCardRect(Canvas canvas, RectF r, float u, int id, boolean premium, int alpha,
+                                  String badge, boolean label) {
             boolean reload = id == RELOAD_ID;
             Bitmap bmp = art == null ? null : reload ? art.back(KhRomArt.BACK_RED) : art.card(id);
-            if (selected) {
-                fill.setColor(0x55FFFFFF);
-                float pad = cardH * 0.06f;
-                canvas.drawRoundRect(card.left - pad, card.top - pad, card.right + pad, card.bottom + pad,
-                    pad * 2, pad * 2, fill);
-            }
+            float h = r.height();
             if (bmp != null) {
-                pixel.setAlpha(dim ? 70 : 255);
-                canvas.drawBitmap(bmp, null, card, pixel);
+                pixel.setAlpha(alpha);
+                canvas.drawBitmap(bmp, null, r, pixel);
+                pixel.setAlpha(255);
             } else {
-                tile.set(card);
-                drawTile(canvas, id, premium, false, dim, null, u);
+                tile.set(r);
+                drawTile(canvas, id, premium, false, alpha < 128, null, u);
             }
-            float edge = Math.max(2f, cardH * 0.03f);
+            float edge = Math.max(2f, h * 0.03f);
             if (premium && bmp != null) {
                 fill.setStyle(Paint.Style.STROKE);
                 fill.setStrokeWidth(edge);
                 fill.setColor(0xFFE8C45A);
-                canvas.drawRoundRect(card, edge * 2, edge * 2, fill);
+                fill.setAlpha(alpha);
+                canvas.drawRoundRect(r, edge * 2, edge * 2, fill);
                 fill.setStyle(Paint.Style.FILL);
+                fill.setAlpha(255);
             }
             if (badge != null) {
-                float r = cardH * 0.13f;
+                float rad = h * 0.13f;
                 fill.setColor(0xFFE8C45A);
-                canvas.drawCircle(card.right - r * 0.6f, card.top + r * 0.6f, r, fill);
-                text.setTextSize(r * 1.3f);
+                fill.setAlpha(alpha);
+                canvas.drawCircle(r.right - rad * 0.6f, r.top + rad * 0.6f, rad, fill);
+                fill.setAlpha(255);
+                text.setTextSize(rad * 1.3f);
                 text.setColor(0xFF1B1F3B);
+                text.setAlpha(alpha);
                 text.setFakeBoldText(true);
-                canvas.drawText(badge, card.right - r * 0.6f,
-                    card.top + r * 0.6f - (text.descent() + text.ascent()) / 2, text);
+                canvas.drawText(badge, r.right - rad * 0.6f, r.top + rad * 0.6f - (text.descent() + text.ascent()) / 2, text);
                 text.setFakeBoldText(false);
                 text.setColor(Color.WHITE);
             }
-            if (labelH > 0) {
+            if (label) {
                 String name = reload ? "Reload" : KhCards.name(id);
                 int ls = Math.max(1, (int) (labelH / 13));
-                gameText(canvas, name, cx, card.bottom + (labelH - ls * 12) / 2, ls, 0, cellW - gap,
-                    TEXT_BODY, TEXT_SHADOW, dim ? 110 : 255);
+                gameText(canvas, name, r.centerX(), r.bottom + (labelH - ls * 12) / 2, ls, 0,
+                    Math.max(r.width() * 1.6f, cellW - u * 0.15f), TEXT_BODY, TEXT_SHADOW, alpha);
             }
         }
 
@@ -612,20 +640,67 @@ final class KhBottomPresentation extends Presentation {
                 gameText(canvas, "No cards in this list", w / 2, (bar + h) / 2 - gbaScale() * 6, gbaScale(), 0, w);
                 return;
             }
+            long now = android.os.SystemClock.uptimeMillis();
             float top = bar + u * 0.1f;
             float strip = drawPickups(canvas, w, h, u);
-            layoutCards(n, w, top, h - strip, u);
+            handMotion.sync(hand, 7, n, RELOAD_ID, now);
+            java.util.List<KhHandAnimator.Sprite> cells = handMotion.laidOut();
+            layoutCards(Math.max(1, cells.size()), w, top, h - strip, u);
+            for (int k = 0; k < cells.size(); k++) cellRect(k, top, u, cells.get(k).target);
+            handMotion.step(now);
+
             int cursor = hand[3];
-            for (int i = 0; i < n; i++) {
-                int slot = hand[7 + i];
-                int id = slot & 0xFFFF;
-                boolean used = (slot & (1 << 16)) != 0, stocked = (slot & (1 << 17)) != 0;
-                boolean removed = (slot & (1 << 18)) != 0;
-                boolean reload = id == RELOAD_ID;
-                drawCard(canvas, i, top, u, reload ? id : id & KhCards.ID_MASK,
-                    !reload && (id & KhCards.PREMIUM) != 0, i == cursor, (used || removed) && !stocked,
-                    stocked ? "S" : null);
+            KhHandAnimator.Sprite selected = handMotion.get(cursor);
+            if (selected != null && selected.visible) {
+                // The highlight glides after the cursor instead of jumping.
+                if (cursorGlow.isEmpty()) cursorGlow.set(selected.rect);
+                float k = 0.3f;
+                cursorGlow.left += (selected.rect.left - cursorGlow.left) * k;
+                cursorGlow.top += (selected.rect.top - cursorGlow.top) * k;
+                cursorGlow.right += (selected.rect.right - cursorGlow.right) * k;
+                cursorGlow.bottom += (selected.rect.bottom - cursorGlow.bottom) * k;
+                float lift = cardH * 0.06f + (float) Math.sin(now / 260.0) * cardH * 0.02f;
+                card.set(cursorGlow);
+                card.offset(0, -lift);
+                drawGlow(canvas, card, 0x66FFFFFF);
             }
+
+            for (KhHandAnimator.Sprite sp : handMotion.drawn(now)) {
+                card.set(sp.rect);
+                float ch = card.height();
+                int alpha = 255;
+                float scaleX = 1, scale = 1, dy = 0;
+                if (sp.phase == KhHandAnimator.PHASE_ENTER) {
+                    float t = sp.progress(now);
+                    if (now < sp.phaseStart) continue;            // still waiting for its turn in the deal
+                    float e = KhHandAnimator.easeOut(t);
+                    alpha = (int) (255 * Math.min(1, t * 1.6f));
+                    if (sp.fromAbove) {                           // friend card: flips in from above
+                        dy = -(1 - e) * ch * 1.4f;
+                        scaleX = Math.max(0.05f, Math.abs((float) Math.cos((1 - e) * Math.PI)));
+                    } else {                                       // dealt in from below
+                        dy = (1 - e) * ch * 0.9f;
+                        scale = 0.7f + 0.3f * e;
+                    }
+                } else if (sp.phase == KhHandAnimator.PHASE_EXIT) {
+                    float t = sp.progress(now);                    // used: flies up and fades
+                    float e = KhHandAnimator.easeOut(t);
+                    alpha = (int) (255 * (1 - t));
+                    dy = -e * ch * 0.7f;
+                    scale = 1 + 0.18f * e;
+                }
+                if (sp.slot == cursor && sp.visible) dy -= cardH * 0.06f + (float) Math.sin(now / 260.0) * cardH * 0.02f;
+                if (sp.stocked) dy -= ch * 0.14f;                  // stocked cards ride high
+                float cx = card.centerX(), cy = card.centerY() + dy;
+                float hw = card.width() / 2 * scale * scaleX, hh = ch / 2 * scale;
+                card.set(cx - hw, cy - hh, cx + hw, cy + hh);
+                if (sp.stocked) drawGlow(canvas, card, 0x66E8C45A);
+                if (sp.friend && sp.phase == KhHandAnimator.PHASE_ENTER) drawGlow(canvas, card, 0x8848D0FF);
+                int id = sp.id == RELOAD_ID ? sp.id : sp.id & KhCards.ID_MASK;
+                drawCardRect(canvas, card, u, id, sp.premium, alpha, sp.stocked ? "S" : null,
+                    labelH > 0 && sp.phase != KhHandAnimator.PHASE_EXIT);
+            }
+            animating = true;   // battle view redraws every frame (cursor bob, motion)
         }
 
         private static final String[] WORLD_NAMES = {
