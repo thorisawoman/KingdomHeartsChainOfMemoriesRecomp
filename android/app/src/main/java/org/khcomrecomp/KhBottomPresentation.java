@@ -263,7 +263,12 @@ final class KhBottomPresentation extends Presentation {
             float w = getWidth(), h = getHeight(), u = unit(), bar = barHeight();
             text.setTextAlign(Paint.Align.LEFT);
             text.setTextSize(u * 0.55f);
-            canvas.drawText(statusLine(), u * 0.4f, bar / 2 - (text.descent() + text.ascent()) / 2, text);
+            // Ellipsize so the status never runs under the MENU / view buttons.
+            String status = statusLine();
+            float room = bMenu.rect.left - u * 0.7f;
+            int fit = text.breakText(status, true, room, null);
+            if (fit < status.length()) status = status.substring(0, Math.max(0, fit - 1)) + "\u2026";
+            canvas.drawText(status, u * 0.4f, bar / 2 - (text.descent() + text.ascent()) / 2, text);
             text.setTextAlign(Paint.Align.CENTER);
             if (buttons == deckButtons) {
                 if (handLive()) drawHand(canvas, w, h, u, bar);
