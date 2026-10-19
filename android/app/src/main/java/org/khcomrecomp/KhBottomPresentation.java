@@ -2,6 +2,7 @@ package org.khcomrecomp;
 
 import android.app.Presentation;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -15,6 +16,7 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 
+import org.gbarecomp.GbaGameConfig;
 import org.libsdl.app.SDLActivity;
 
 import java.io.BufferedReader;
@@ -29,7 +31,7 @@ import java.util.List;
  * Bottom-screen panel with two views, switched from the status bar:
  *
  * DECK (default) shows the equipped deck read live from guest RAM (see
- * src/android/dual_screen.cpp), coloured by card category. During a battle it
+ * src/android/dual_screen.cpp), drawn with the game's own card art (KhCardArt). During a battle it
  * switches to the battle card list: selected card outlined, used cards dimmed,
  * stocked cards marked.
  *
@@ -41,8 +43,17 @@ import java.util.List;
 final class KhBottomPresentation extends Presentation {
     private static final String WATCH_FILE = "bottom_screen_watches.txt";
 
+    private KhCardArt art;
+
     KhBottomPresentation(Context outer, Display display) {
         super(outer, display);
+    }
+
+    @Override
+    protected void onStop() {
+        if (art != null) art.close();
+        art = null;
+        super.onStop();
     }
 
     @Override
@@ -52,7 +63,8 @@ final class KhBottomPresentation extends Presentation {
         int[] addrs = new int[watches.size()];
         for (int i = 0; i < addrs.length; i++) addrs[i] = watches.get(i).address;
         KhNative.setWatches(addrs);
-        setContentView(new PanelView(getContext(), watches));
+        art = KhCardArt.open(getContext(), GbaGameConfig.load(getContext()).romFile);
+        setContentView(new PanelView(getContext(), watches, art));
         if (getWindow() != null) {
             // Touches still arrive, but focus stays with the game window on the top screen:
             // a focus change there would make SDL drop held keys and pause.
@@ -148,6 +160,9 @@ final class KhBottomPresentation extends Presentation {
         private final RectF tile = new RectF();
 
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pixel = new Paint();
+        private final KhCardArt art;   // null when the ROM is not readable: flat tiles instead
+        private final RectF card = new RectF();
         private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mono = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -168,9 +183,11 @@ final class KhBottomPresentation extends Presentation {
             }
         };
 
-        PanelView(Context c, List<Watch> watches) {
+        PanelView(Context c, List<Watch> watches, KhCardArt art) {
             super(c);
             this.watches = watches;
+            this.art = art;
+            pixel.setFilterBitmap(false);   // keep the game's pixel art crisp when scaled
             text.setColor(Color.WHITE);
             text.setTextAlign(Paint.Align.CENTER);
             mono.setColor(0xFFCFD3E6);
@@ -276,22 +293,7 @@ final class KhBottomPresentation extends Presentation {
         /** True while the game is in battle and a card list is readable. */
         private boolean handLive() { return handCount >= 7 && hand[0] == 1; }
 
-        /** Columns and row height that fit n tiles under the bar without scrolling. */
-        private float layoutGrid(int n, float h, float u, float bar, int[] colsOut) {
-            float gap = u * 0.12f, avail = h - bar - 2 * gap;
-            int cols = 3;
-            float rowH = Math.min(u * 1.1f, avail / (float) Math.ceil(n / (double) cols));
-            while (rowH < u * 0.55f && cols < 8) {
-                cols++;
-                rowH = Math.min(u * 1.1f, avail / (float) Math.ceil(n / (double) cols));
-            }
-            colsOut[0] = cols;
-            return rowH;
-        }
-
-        private final int[] cols = new int[1];
-
-        /** One card: category colour, value, name; gold edge for premium, white for selected. */
+        /** Fallback card without art: category colour, value, name; gold edge for premium. */
         private void drawTile(Canvas canvas, int id, boolean premium, boolean selected, boolean dim,
                               String badge, float u) {
             float rr = tile.height() * 0.18f;
@@ -335,7 +337,89 @@ final class KhBottomPresentation extends Presentation {
             text.setTextAlign(Paint.Align.CENTER);
         }
 
-        /** The equipped deck as a grid of tiles, in deck order. */
+        // Card grid geometry, filled by layoutCards().
+        private int gridCols;
+        private float cellW, cellH, cardH, labelH;
+
+        /**
+         * Picks the column count that makes n cards largest (card shape 28:39), with names
+         * under the cards when that still leaves them a useful size.
+         */
+        private void layoutCards(int n, float w, float top, float bottom, float u) {
+            float gap = u * 0.15f;
+            for (int pass = 0; pass < 2; pass++) {
+                labelH = pass == 0 ? u * 0.42f : 0f;
+                cardH = 0;
+                for (int c = 1; c <= Math.max(1, n); c++) {
+                    int rows = (n + c - 1) / c;
+                    float cw = (w - gap) / c, ch = (bottom - top) / rows;
+                    float h = Math.min(ch - labelH - gap, (cw - gap) * KhCardArt.HEIGHT / KhCardArt.WIDTH);
+                    if (h > cardH) {
+                        cardH = h;
+                        gridCols = c;
+                        cellW = cw;
+                        cellH = ch;
+                    }
+                }
+                if (cardH >= u * 1.6f) return;
+            }
+        }
+
+        /** One card in grid cell i: the decoded card image, or a flat tile if art is unavailable. */
+        private void drawCard(Canvas canvas, int i, float top, float u, int id, boolean premium,
+                              boolean selected, boolean dim, String badge) {
+            float gap = u * 0.15f;
+            float cx = gap / 2 + (i % gridCols) * cellW + cellW / 2;
+            float y = top + (i / gridCols) * cellH + gap / 2;
+            float cw = cardH * KhCardArt.WIDTH / KhCardArt.HEIGHT;
+            card.set(cx - cw / 2, y, cx + cw / 2, y + cardH);
+            boolean reload = id == RELOAD_ID;
+            Bitmap bmp = art == null ? null : reload ? art.back(KhCardArt.BACK_RED) : art.card(id);
+            if (selected) {
+                fill.setColor(0x55FFFFFF);
+                float pad = cardH * 0.06f;
+                canvas.drawRoundRect(card.left - pad, card.top - pad, card.right + pad, card.bottom + pad,
+                    pad * 2, pad * 2, fill);
+            }
+            if (bmp != null) {
+                pixel.setAlpha(dim ? 70 : 255);
+                canvas.drawBitmap(bmp, null, card, pixel);
+            } else {
+                tile.set(card);
+                drawTile(canvas, id, premium, false, dim, null, u);
+            }
+            float edge = Math.max(2f, cardH * 0.03f);
+            if (premium && bmp != null) {
+                fill.setStyle(Paint.Style.STROKE);
+                fill.setStrokeWidth(edge);
+                fill.setColor(0xFFE8C45A);
+                canvas.drawRoundRect(card, edge * 2, edge * 2, fill);
+                fill.setStyle(Paint.Style.FILL);
+            }
+            if (badge != null) {
+                float r = cardH * 0.13f;
+                fill.setColor(0xFFE8C45A);
+                canvas.drawCircle(card.right - r * 0.6f, card.top + r * 0.6f, r, fill);
+                text.setTextSize(r * 1.3f);
+                text.setColor(0xFF1B1F3B);
+                text.setFakeBoldText(true);
+                canvas.drawText(badge, card.right - r * 0.6f,
+                    card.top + r * 0.6f - (text.descent() + text.ascent()) / 2, text);
+                text.setFakeBoldText(false);
+                text.setColor(Color.WHITE);
+            }
+            if (labelH > 0) {
+                String name = reload ? "Reload" : KhCards.name(id);
+                text.setTextSize(labelH * 0.72f);
+                text.setAlpha(dim ? 110 : 255);
+                int fit = text.breakText(name, true, cellW - gap, null);
+                canvas.drawText(fit < name.length() ? name.substring(0, Math.max(0, fit - 1)) + "\u2026" : name,
+                    cx, card.bottom + labelH * 0.78f, text);
+                text.setAlpha(255);
+            }
+        }
+
+        /** The equipped deck in deck order. */
         private void drawDeck(Canvas canvas, float w, float h, float u, float bar) {
             int n = deckCount >= 5 ? Math.min(deck[4], deckCount - 5) : 0;
             if (n == 0) {
@@ -344,20 +428,18 @@ final class KhBottomPresentation extends Presentation {
                     w / 2, (bar + h) / 2, text);
                 return;
             }
-            float gap = u * 0.12f, top = bar + gap;
-            float rowH = layoutGrid(n, h, u, bar, cols);
-            float colW = (w - gap) / cols[0];
+            float top = bar + u * 0.1f;
+            layoutCards(n, w, top, h, u);
             for (int i = 0; i < n; i++) {
                 int entry = deck[5 + i];
-                float x = gap + (i % cols[0]) * colW, y = top + (i / cols[0]) * rowH;
-                tile.set(x, y, x + colW - gap, y + rowH - gap);
-                drawTile(canvas, entry & KhCards.ID_MASK, (entry & KhCards.PREMIUM) != 0, false, false, null, u);
+                drawCard(canvas, i, top, u, entry & KhCards.ID_MASK, (entry & KhCards.PREMIUM) != 0,
+                    false, false, null);
             }
         }
 
         /**
-         * The battle card list in game order: the selected card outlined in white, used cards
-         * dimmed, stocked cards marked S. The list re-reads several times a second.
+         * The battle card list in game order: the selected card highlighted, used cards
+         * dimmed, stocked cards badged S. The list re-reads several times a second.
          */
         private void drawHand(Canvas canvas, float w, float h, float u, float bar) {
             int n = Math.min(hand[6], handCount - 7);
@@ -366,19 +448,18 @@ final class KhBottomPresentation extends Presentation {
                 canvas.drawText("No cards in this list", w / 2, (bar + h) / 2, text);
                 return;
             }
-            float gap = u * 0.12f, top = bar + gap;
-            float rowH = layoutGrid(n, h, u, bar, cols);
-            float colW = (w - gap) / cols[0];
+            float top = bar + u * 0.1f;
+            layoutCards(n, w, top, h, u);
             int cursor = hand[3];
             for (int i = 0; i < n; i++) {
                 int slot = hand[7 + i];
                 int id = slot & 0xFFFF;
                 boolean used = (slot & (1 << 16)) != 0, stocked = (slot & (1 << 17)) != 0;
                 boolean removed = (slot & (1 << 18)) != 0;
-                float x = gap + (i % cols[0]) * colW, y = top + (i / cols[0]) * rowH;
-                tile.set(x, y, x + colW - gap, y + rowH - gap);
-                drawTile(canvas, id == RELOAD_ID ? id : id & KhCards.ID_MASK, id != RELOAD_ID && (id & KhCards.PREMIUM) != 0,
-                    i == cursor, (used || removed) && !stocked, stocked ? "S" : null, u);
+                boolean reload = id == RELOAD_ID;
+                drawCard(canvas, i, top, u, reload ? id : id & KhCards.ID_MASK,
+                    !reload && (id & KhCards.PREMIUM) != 0, i == cursor, (used || removed) && !stocked,
+                    stocked ? "S" : null);
             }
         }
 
