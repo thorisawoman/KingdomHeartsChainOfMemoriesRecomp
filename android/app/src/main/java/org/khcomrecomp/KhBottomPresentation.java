@@ -31,7 +31,9 @@ import java.util.List;
  * switches to the battle card list: selected card outlined, used cards dimmed,
  * stocked cards marked, with the cards picked up during the battle along the bottom.
  *
- * MAP shows the current floor the way the game's map screen draws it.
+ * MAP shows the current floor the way the game's map screen draws it; in the castle halls between
+ * floors it shows Castle Oblivion's 13 floors with their worlds and progress (and switches there
+ * by itself when you enter a hall).
  */
 final class KhBottomPresentation extends Presentation {
     private KhRomArt art;
@@ -92,7 +94,7 @@ final class KhBottomPresentation extends Presentation {
         private static final int VIEW_DECK = 0, VIEW_MAP = 1;
         private static final String[] VIEW_NAMES = {"DECK", "MAP"};
         private int view = VIEW_DECK;
-        private final int[] map = new int[4 + 32];
+        private final int[] map = new int[4 + 32 + 1 + 13];
         private int mapCount;
         private final KhHandAnimator handMotion = new KhHandAnimator();
         private final RectF cursorGlow = new RectF();
@@ -140,6 +142,7 @@ final class KhBottomPresentation extends Presentation {
                     pickupCount = 0;
                 }
                 stepSelection();
+                followHall();
                 invalidate();
                 postDelayed(this, handLive() || tapTarget >= 0 ? 33 : 100);   // follow battles closely
             }
@@ -771,8 +774,77 @@ final class KhBottomPresentation extends Presentation {
         private boolean gameStarted() {
             if (handLive()) return true;
             if (mapCount < 36 || map[1] < 0) return false;
+            if (inHall() || map[3] == ROOM_TUTORIAL) return true;
             int cur = map[3];
             return cur >= 0 && cur < 32 && (map[4 + cur] & KhRomArt.FLOOR_ROOM_CREATED) != 0;
+        }
+
+        // Castle Oblivion halls (gMapFloorState.room): tutorial, exit hall, entrance hall.
+        private static final int ROOM_TUTORIAL = 0xFC, ROOM_EXIT_HALL = 0xFD, ROOM_ENTRANCE_HALL = 0xFE;
+        private static final int FLOOR_FLAG_CLEARED = 0x1;
+
+        private boolean inHall() {
+            if (mapCount < 50 || map[1] < 0) return false;
+            int r = map[3];
+            return r == ROOM_EXIT_HALL || r == ROOM_ENTRANCE_HALL;
+        }
+
+        // Entering a hall switches the bottom screen to the castle view; leaving restores the view.
+        private boolean wasInHall;
+        private int viewBeforeHall = VIEW_DECK;
+
+        private void followHall() {
+            boolean hall = inHall() && !handLive();
+            if (hall && !wasInHall) {
+                viewBeforeHall = view;
+                setView(VIEW_MAP);
+            } else if (!hall && wasInHall) {
+                setView(viewBeforeHall);
+            }
+            wasInHall = hall;
+        }
+
+        private void setView(int v) {
+            view = v;
+            bView.label = VIEW_NAMES[(view + 1) % VIEW_NAMES.length];
+        }
+
+        /**
+         * Between floors: Castle Oblivion's 13 floors as a tower (1F at the bottom), each with
+         * the world chosen for it and whether it is cleared, the current floor highlighted and the
+         * hall named in the title.
+         */
+        private void drawCastle(Canvas canvas, float w, float h, float u, float bar) {
+            int s = gbaScale(), floor = map[1];
+            String where = map[3] == ROOM_EXIT_HALL ? "Exit hall" : "Entrance hall";
+            float top = bar + u * 0.15f;
+            gameText(canvas, "Castle Oblivion  \u00B7  " + where, w / 2, top, s, 0, w - u);
+            top += 14 * s + u * 0.15f;
+            int n = 13;
+            float bottom = h - u * 0.25f, rowH = (bottom - top) / n, rowW = w * 0.8f, left = (w - rowW) / 2;
+            int ts = Math.max(2, Math.min(s - 1, (int) (rowH / 14)));
+            for (int i = 0; i < n; i++) {
+                int v = i == floor ? map[36] : map[37 + i];       // live state for the current floor
+                int world = (v >> 16) & 0xFF;
+                boolean cleared = (v & FLOOR_FLAG_CLEARED) != 0, current = i == floor;
+                float y = bottom - (i + 1) * rowH;
+                RectF r = new RectF(left, y + rowH * 0.1f, left + rowW, y + rowH * 0.9f);
+                int edge = Math.max(2, s / 2);
+                fill.setColor(art != null ? art.panelColour(current ? 0xF : 0xA) : 0xFF101425);
+                canvas.drawRoundRect(r, edge * 3, edge * 3, fill);
+                fill.setColor(art != null ? art.panelColour(current ? 0xB : 0xD) : 0xFF262B4A);
+                canvas.drawRoundRect(r.left + edge, r.top + edge, r.right - edge, r.bottom - edge, edge * 3, edge * 3, fill);
+                float ty = r.centerY() - ts * 6.5f;
+                int body = current ? 0xFFE8C45A : world != 0 ? TEXT_BODY : 0xFF8890A8;
+                gameText(canvas, (i + 1) + "F", r.left + u * 0.3f, ty, ts, -1, u * 1.5f, body, TEXT_SHADOW, 255);
+                String name = world != 0 && world < WORLD_NAMES.length ? WORLD_NAMES[world]
+                    : current ? "Choose a world card" : "\u2014";
+                gameText(canvas, name, r.left + u * 1.6f, ty, ts, -1, rowW - u * 4.5f, body, TEXT_SHADOW, 255);
+                String state = cleared ? "Cleared" : current ? "You are here" : world != 0 ? "Visited" : "";
+                if (!state.isEmpty())
+                    gameText(canvas, state, r.right - u * 0.3f, ty, ts, 1, u * 3.2f,
+                        cleared ? 0xFF8CE0A0 : body, TEXT_SHADOW, 255);
+            }
         }
 
         /** The game's title logo, centred at the largest integer scale that fits. */
@@ -803,6 +875,10 @@ final class KhBottomPresentation extends Presentation {
          * world and floor.
          */
         private void drawMap(Canvas canvas, float w, float h, float u, float bar) {
+            if (inHall()) {
+                drawCastle(canvas, w, h, u, bar);
+                return;
+            }
             int s = gbaScale();
             boolean valid = mapCount >= 4 + 32 && map[1] >= 0;
             KhRomArt.FloorLayout floor = valid && art != null ? art.floorLayout(map[1], map[2] != 0) : null;

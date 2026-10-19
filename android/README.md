@@ -30,7 +30,9 @@ every game address it relies on and how each was verified, and what is left.
 - **MAP**: the current floor drawn the way the game's map screen draws it (room shapes from doors,
   unvisited rooms dimmed, event rooms, the current room pulsing, animated door markers for closed
   doors and hall exits), with the world, the floor and the current room's name. **Tap a room** to
-  see its name and state.
+  see its name and state. **In the castle halls between floors** it shows Castle Oblivion's 13
+  floors as a tower, with the world chosen for each and whether it's cleared, and the bottom screen
+  switches there automatically when you enter a hall.
 - Everything else is on the physical controls. **BACK** opens the settings menu and **Start**
   pauses. The touch pad, PAD view and MENU button were removed in 0.18.
 
@@ -157,7 +159,8 @@ Found by combining three sources:
 | `gCardCount` / active deck index | `0x0203A858` / `0x02034AB0` | same; `GetActiveDeckIndex` 0x08085FA4 |
 | `gGameState` (flags +8, 0x8 = Riku; floor s8 +0xE; field HP s16 +0x32) | `0x02039BB0` | `CopyMapProgress` 0x080E92B8 |
 | `PlayerProgression` (maxHp +0, cp +2, exp +8, nextExp +0xC, level +0x10, learnedStocks +0x14, moogle +0x7C) | `gGameState + 0xF8` | decomp assert + live dumps |
-| `gMapFloorState` (world +4, current room +6, rooms[32] ×16 bytes @+0x1C) | `0x0203C590` | `CopyMapProgress` |
+| `gMapFloorState` (flags +2, world +4, current room +6: `0xFC` tutorial / `0xFD` exit hall / `0xFE` entrance hall; rooms[32] ×16 bytes @+0x1C) | `0x0203C590` | `CopyMapProgress` |
+| `gGameState.floors[13]` (`GameFloor`: flags u16 (`0x1` cleared), world u8) | `gGameState + 0x184` | `CopyMapProgress` |
 | `gBtlWork` pointer → Sora's `BtlObj` at +0x7C (hp +0x2C, maxHp +0x2E) | `0x02039B84` | live dumps (HP 80→64) |
 | Riku's battle cards: `sRikuSelectedCard` (same layout; chosen by the Riku flag) | `0x02034AAC` | literal counts in Riku's battle code (63 uses; its request words `0x02034AA4` / `AA8` come first in the file) |
 | **Battle cards**: `sSoraSelectedCard` → `CardDisplayArgs` (pool +0x38 = `&work->cardDisplays[list]`, index +0x44, list +0x46) → `CardBattleWork` (slots +0x44, slotCounts +0xA8, cardsLeft +0xB0, listIndex +0xB8, stockCount +0xB9); `CardSlot` 0xC bytes (id u32, pad +6, stocked +7, used +8, removed +0xA); Reload = 0xFFFE; friend cards follow Reload | `0x02034A98` | live dumps |
@@ -247,6 +250,7 @@ pid after any restart.
 | 0.16 | **In-game saves work**: save type SRAM 32 KB (was EEPROM, so nothing was ever written) |
 | 0.17 | New cards ignores the collection swap when a save loads |
 | 0.18 | Title logo on the bottom screen until play starts; touch pad / PAD view / MENU removed; R3 switches DECK/MAP |
+| 0.19 | Castle Oblivion floor view in the halls between floors (worlds, cleared floors, current hall) |
 
 Source: <https://github.com/thorisawoman/KingdomHeartsChainOfMemoriesRecomp> (branch
 `android-thor-port`, a fork of rafadono/KingdomHeartsChainOfMemoriesRecomp). The changed

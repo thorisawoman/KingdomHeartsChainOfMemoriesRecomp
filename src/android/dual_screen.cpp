@@ -115,10 +115,15 @@ constexpr uint32_t kFloorCurrentRoom = 0x6;        // u8
 constexpr uint32_t kFloorRooms = 0x1C;             // MapFloorRoom rooms[32], 0x10 bytes each
 constexpr uint32_t kFloorRoomSize = 0x10;          // u16 flags, u32 seed, u8 nameId, roomType, ...
 constexpr int kFloorRoomCount = 32;
+constexpr uint32_t kFloorFlags = 0x2;              // u16 live flags of the current floor
+constexpr uint32_t kGameFloors = 0x184;            // GameFloor gGameState.floors[13]: u16 flags, u8 world
+constexpr int kFloorCount = 13;
 
 struct MapSnapshot {
     int world = -1, floor = -1, riku = 0, room = -1;
     std::array<uint32_t, kFloorRoomCount> rooms{};   // flags | nameId << 16 | roomType << 24
+    uint32_t live_floor = 0;                          // current floor: flags | world << 16 (gMapFloorState)
+    std::array<uint32_t, kFloorCount> floors{};       // stored floors: flags | world << 16
 };
 MapSnapshot g_map;
 
@@ -131,6 +136,12 @@ void read_map(MapSnapshot& m) {
         const uint32_t r = kMapFloorState + kFloorRooms + static_cast<uint32_t>(i) * kFloorRoomSize;
         m.rooms[i] = bus_read_u16(r) | static_cast<uint32_t>(bus_read_u8(r + 8)) << 16 |
                      static_cast<uint32_t>(bus_read_u8(r + 9)) << 24;
+    }
+    m.live_floor = bus_read_u16(kMapFloorState + kFloorFlags) |
+                   static_cast<uint32_t>(bus_read_u8(kMapFloorState + kFloorWorld)) << 16;
+    for (int i = 0; i < kFloorCount; ++i) {
+        const uint32_t f = kGameState + kGameFloors + 4u * static_cast<uint32_t>(i);
+        m.floors[i] = bus_read_u16(f) | static_cast<uint32_t>(bus_read_u8(f + 2)) << 16;
     }
 }
 
@@ -453,11 +464,12 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_statusSnapshot(JNIEnv* env,
     return n;
 }
 
-// Floor map: out = [world, floor (-1 none), riku (0/1), current room, 32 rooms
-// (flags | nameId << 16 | roomType << 24)]; returns entries written.
+// Floor map: out = [world, floor (-1 none), riku (0/1), current room (0xFC tutorial, 0xFD exit hall,
+// 0xFE entrance hall), 32 rooms (flags | nameId << 16 | roomType << 24), live floor
+// (flags | world << 16), 13 stored floors (flags | world << 16)]; returns entries written.
 JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_mapSnapshot(JNIEnv* env, jclass, jintArray out) {
     if (!out) return 0;
-    std::array<jint, 4 + kFloorRoomCount> buf{};
+    std::array<jint, 4 + kFloorRoomCount + 1 + kFloorCount> buf{};
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         buf[0] = g_map.world;
@@ -465,6 +477,8 @@ JNIEXPORT jint JNICALL Java_org_khcomrecomp_KhNative_mapSnapshot(JNIEnv* env, jc
         buf[2] = g_map.riku;
         buf[3] = g_map.room;
         for (int i = 0; i < kFloorRoomCount; ++i) buf[4 + i] = static_cast<jint>(g_map.rooms[i]);
+        buf[4 + kFloorRoomCount] = static_cast<jint>(g_map.live_floor);
+        for (int i = 0; i < kFloorCount; ++i) buf[5 + kFloorRoomCount + i] = static_cast<jint>(g_map.floors[i]);
     }
     const jsize n = std::min<jsize>(env->GetArrayLength(out), static_cast<jsize>(buf.size()));
     env->SetIntArrayRegion(out, 0, n, buf.data());
