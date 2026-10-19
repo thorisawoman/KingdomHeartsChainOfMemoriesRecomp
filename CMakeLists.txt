@@ -21,6 +21,17 @@ if(MSVC)
     add_compile_options("/FI${MSVC_COMPAT_HEADER}")
 endif()
 
+# macOS: Apple's linker has no -Wl,--wrap, so the interposed functions are renamed at compile
+# time in every translation unit (gbarecomp, recomp-ui, the library and the game). The wraps keep
+# their usual names; src/apple/apple_ld_wraps.c (compiled without the renames) supplies __real_*.
+if(APPLE)
+    set(KHCOM_APPLE_WRAPPED SDL_PollEvent SDL_UpdateTexture SDL_RenderCopy SDL_RenderPresent
+        SDL_QueueAudio SDL_OpenAudioDevice recomp_runtime_ui_create_standard)
+    foreach(_fn IN LISTS KHCOM_APPLE_WRAPPED)
+        add_compile_definitions(${_fn}=__wrap_${_fn})
+    endforeach()
+endif()
+
 set(GBARECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/gbarecomp"
     CACHE PATH "Path to gbarecomp platform core (git submodule)")
 
@@ -86,6 +97,20 @@ set(KHCOM_COMMON_SOURCES
     src/text_overlay/fade_sampler.cpp
 )
 
+if(ANDROID)
+    # Android: SDLActivity loads libmain.so, so the game is a shared library named `main` (see
+    # gbarecomp/platform/android/cpp/CMakeLists.txt). Same sources and link setup as the desktop
+    # executable that gbaimp_add_host() makes; the entry point is SDL_main in src/main.cpp.
+    set(_GBAIMP_HOST_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+    set(_GBAIMP_HOST_INCLUDE_DIRS "")
+    set(_GBAIMP_HOST_ENHANCED_IMGUI "${GBAIMP_ENHANCED_IMGUI_SOURCE_DEFAULT}")
+    set(_GBAIMP_HOST_RUI_SETTINGS_C "")
+    file(GLOB KHCOM_GENERATED_SOURCES "${_GBAIMP_HOST_GENERATED_DIR}/*.c" "${_GBAIMP_HOST_GENERATED_DIR}/*.cpp")
+    set_source_files_properties(${KHCOM_GENERATED_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+    add_library(main SHARED src/main.cpp src/android/dual_screen.cpp ${KHCOM_COMMON_SOURCES} ${KHCOM_GENERATED_SOURCES})
+    _gbaimp_host_configure_target(main FALSE khcom)
+    target_link_libraries(main PRIVATE SDL2::SDL2 log android)
+else()
 gbaimp_add_host(KHCOMRecomp
     SYMBOL_PREFIX khcom
     SOURCES
@@ -102,6 +127,16 @@ gbaimp_add_host(KHCOMRecomp
 # The unit tests link the real game_config.cpp (settings registry, khcom_config.ini); scaffold_stub.cpp then
 # only provides the empty dispatch table.
 target_compile_definitions(khcom_unit_tests PRIVATE KHCOM_TEST_REAL_CONFIG)
+endif()
+
+if(APPLE)
+    target_sources(KHCOMRecomp PRIVATE src/apple/apple_ld_wraps.c)
+    # recomp-ui's definition of the menu constructor becomes the __real_ symbol.
+    if(RECOMP_UI_DIR AND EXISTS "${RECOMP_UI_DIR}/src/common/recomp_runtime_settings.c")
+        set_source_files_properties("${RECOMP_UI_DIR}/src/common/recomp_runtime_settings.c" PROPERTIES
+            COMPILE_OPTIONS "-Urecomp_runtime_ui_create_standard;-Drecomp_runtime_ui_create_standard=__real_recomp_runtime_ui_create_standard")
+    endif()
+endif()
 
 # ---- SDL interception ---------------------------------------------------------------
 # (the link options and the MSVC symbol rename below are applied by gbaimp_add_host())

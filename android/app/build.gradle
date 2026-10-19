@@ -1,0 +1,41 @@
+// KHCOMRecomp for Android. Everything except this game block (SDL, the org.gbarecomp Java
+// shell, manifest, native CMake root, payload staging) comes from the engine's shared
+// gbarecomp/platform/android/gbarecomp-app.gradle.
+plugins {
+    id "com.android.application"
+}
+
+def gameRoot = file("../..")
+
+ext.gbaGame = [
+    applicationId : "org.khcomrecomp.android",
+    versionCode   : 1,
+    versionName   : "0.1-personal",
+    title         : "Kingdom Hearts: Chain of Memories",
+    romLabel      : "Kingdom Hearts: Chain of Memories (USA) ROM",
+    romSha1       : ["10729bd884f8fdca7a310b6d606c52e46657aa48"],
+    romSize       : 33554432,
+    romFile       : "khcom_usa.gba",
+    // The runtime executes the real BIOS (recompiled); it will not boot without one.
+    biosRequired  : true,
+    variant       : "khcom",
+    gameToml      : file("../payload/game.toml"),
+    gameRoot      : gameRoot,
+    engineRoot    : new File(gameRoot, "gbarecomp"),
+    recompUiRoot  : new File(gameRoot, "external/recomp-ui"),
+    orientation   : "landscape",
+    payloadDirs   : [
+        [from: new File(gameRoot, "keybinds.ini"), into: "."],
+        [from: new File(gameRoot, "external/recomp-ui/assets/common/fonts"), into: "assets/fonts"],
+        [from: new File(gameRoot, "external/recomp-ui/assets/common/img"), into: "assets/img"],
+        [from: new File(gameRoot, "external/recomp-ui/assets/consoles/gba/img"), into: "assets/img"],
+    ],
+    releaseAbis   : ["arm64-v8a"],
+    debugAbis     : ["arm64-v8a"],
+    nativeJobs    : 6,
+    // Bottom-screen panel on dual-display devices (no-op without a second display).
+    companion     : "org.khcomrecomp.KhDualScreen",
+    javaDirs      : [file("src/main/java")],
+]
+
+apply from: new File(gbaGame.engineRoot, "platform/android/gbarecomp-app.gradle")

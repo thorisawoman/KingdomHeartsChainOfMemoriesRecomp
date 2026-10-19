@@ -20,6 +20,8 @@
 
 #include <cstdio>
 
+#include "android/dual_screen.h"
+
 #if !defined(_WIN32)
 // Linux/GNU ld: __wrap_SDL_X shims + real table (see CMakeLists.txt for the link flags).
 GBAIMP_DEFINE_LD_WRAPS()
@@ -33,6 +35,7 @@ void on_present_begin() { gbaimp::Widescreen::instance().notify_present(); }
 void on_poll() {
     khcom_update_widescreen_state();
     khcom_install_ram_dispatch();
+    khcom::dual_screen::on_poll();   // Android bottom screen (no-op elsewhere)
 }
 
 bool on_event(SDL_Event& event) {

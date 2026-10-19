@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plain heart on the adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#F2F2F7"
+        android:pathData="M54,76 L36,58 C30,52 30,42 37,38 C43,34 50,37 54,43 C58,37 65,34 71,38 C78,42 78,52 72,58 Z" />
+</vector>

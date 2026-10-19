@@ -12,7 +12,7 @@ recomp_cache/
 *.dll
 *.so
 *.dylib
-KHCOMRecomp
+/KHCOMRecomp
 *.ini
 overlay_toolchain/
 out.txt
