@@ -134,38 +134,52 @@ void read_map(MapSnapshot& m) {
     }
 }
 
-// Cards picked up recently (rolling, newest last). ObtainCard writes each new card into the first
-// empty gCardCollection slot (0xFFF) at pickup time, in battle or in the field (battle rewards are
-// collected in the room afterwards), so a slot that fills in is a pickup. The baseline follows the
-// collection continuously, so deck-menu edits and removals are absorbed.
+// Cards picked up recently (rolling, newest last). ObtainCard adds each new card to
+// gCardCollection at pickup time (battle drops, and rewards collected in the field afterwards).
+// Battles also take deck cards out of the collection and put them back, so slot changes alone are
+// not pickups: per card (ID + premium) the tracker keeps the highest count ever seen, and only a
+// count above that high-water mark is a new card. Cards that leave and return never count.
 constexpr uint16_t kCollectionEmpty = 0xFFF;
 constexpr int kMaxPickups = 16;
 constexpr uint32_t kPickupEvery = 6;
+constexpr int kCardKeys = 2048;                         // (ID & 0xFFF) + 1024 if premium
 
 struct PickupTracker {
-    bool armed = false;                                  // baseline taken
-    std::array<uint16_t, kCollectionSize> base{};
+    bool armed = false;
+    std::array<uint16_t, kCardKeys> most{};             // high-water count per card
+    std::array<uint16_t, kCardKeys> now{};
     int count = 0;
     std::array<uint16_t, kMaxPickups> cards{};
 };
 PickupTracker g_pickups;
 
+int card_key(uint16_t entry) {
+    const int id = entry & 0xFFF;
+    return id >= 1024 ? -1 : id + ((entry & 0x8000) ? 1024 : 0);
+}
+
 void track_pickups(PickupTracker& p) {
+    p.now.fill(0);
+    for (int i = 0; i < kCollectionSize; ++i) {
+        const uint16_t e = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
+        if ((e & 0xFFF) == kCollectionEmpty) continue;
+        const int k = card_key(e);
+        if (k >= 0) ++p.now[k];
+    }
     if (!p.armed) {
-        for (int i = 0; i < kCollectionSize; ++i) p.base[i] = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
+        p.most = p.now;
         p.armed = true;
         return;
     }
-    for (int i = 0; i < kCollectionSize; ++i) {
-        const uint16_t now = bus_read_u16(kCardCollection + 2u * static_cast<uint32_t>(i));
-        if (p.base[i] == kCollectionEmpty && now != kCollectionEmpty) {
+    for (int k = 0; k < kCardKeys; ++k) {
+        while (p.now[k] > p.most[k]) {
+            ++p.most[k];
             if (p.count == kMaxPickups) {                // drop the oldest
-                for (int k = 1; k < kMaxPickups; ++k) p.cards[k - 1] = p.cards[k];
+                for (int j = 1; j < kMaxPickups; ++j) p.cards[j - 1] = p.cards[j];
                 --p.count;
             }
-            p.cards[p.count++] = now;
+            p.cards[p.count++] = static_cast<uint16_t>((k & 1023) | ((k & 1024) ? 0x8000 : 0));
         }
-        p.base[i] = now;
     }
 }
 

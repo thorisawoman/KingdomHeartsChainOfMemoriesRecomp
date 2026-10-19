@@ -791,7 +791,7 @@ final class KhBottomPresentation extends Presentation {
             long now = android.os.SystemClock.uptimeMillis();
             fill.setColor(0xC0000000);
             canvas.drawRect(0, barHeight(), w, h, fill);
-            float pw = w * 0.78f, ph = (h - barHeight()) * 0.82f;
+            float pw = w * 0.86f, ph = (h - barHeight()) * 0.94f;
             RectF p = new RectF((w - pw) / 2, barHeight() + (h - barHeight() - ph) / 2, (w + pw) / 2, 0);
             p.bottom = p.top + ph;
             int edge = gbaScale();
@@ -800,40 +800,45 @@ final class KhBottomPresentation extends Presentation {
             fill.setColor(art != null ? art.panelColour(0xD) : 0xFF262B4A);
             canvas.drawRoundRect(p.left + edge, p.top + edge, p.right - edge, p.bottom - edge, edge * 4, edge * 4, fill);
             int s = gbaScale();
-            float x = p.left + u * 0.6f, y = p.top + u * 0.5f, line = 15 * s;
+            float x = p.left + u * 0.6f, y = p.top + u * 0.4f, line = 14 * s, right = p.right - u * 0.6f;
             gameText(canvas, "Sora  \u00B7  Level " + status[3] + (status[0] == 1 ? "  \u00B7  In battle" : ""), x, y, s, -1, pw);
-            y += line * 1.3f;
-            RectF g = new RectF(x, y, p.right - u * 0.6f, y + line * 0.8f);
-            drawHpGauge(canvas, g, status[1], status[2], now);
-            y += line;
-            gameText(canvas, "HP  " + status[1] + " / " + status[2], x, y, s, -1, pw);
-            y += line * 1.3f;
-            gameText(canvas, "CP  " + status[4], x, y, s, -1, pw);
-            y += line * 1.3f;
+            y += line * 1.15f;
+            drawHpGauge(canvas, new RectF(x, y, right, y + line * 0.7f), status[1], status[2], now);
+            y += line * 0.95f;
+            gameText(canvas, "HP  " + status[1] + " / " + status[2] + "      CP  " + status[4], x, y, s, -1, pw);
+            y += line * 1.15f;
             int exp = status[5], next = Math.max(1, status[6]);
             gameText(canvas, "EXP  " + exp + "  \u00B7  next level at " + next, x, y, s, -1, pw);
             y += line;
-            RectF e = new RectF(x, y, p.right - u * 0.6f, y + line * 0.5f);
+            RectF e = new RectF(x, y, right, y + line * 0.45f);
             fill.setColor(art != null ? art.panelColour(0xA) : 0xFF101425);
             canvas.drawRoundRect(e, e.height() / 2, e.height() / 2, fill);
             fill.setColor(0xFF5C9CF0);
             canvas.drawRoundRect(e.left, e.top, e.left + e.width() * Math.min(1f, exp / (float) next), e.bottom,
                 e.height() / 2, e.height() / 2, fill);
-            y += line * 1.1f;
-            gameText(canvas, "Moogle points  " + status[7], x, y, s, -1, pw);
-            y += line * 1.3f;
-            gameText(canvas, "Sleights learned  " + status[8], x, y, s, -1, pw);
+            y += line * 0.8f;
+            gameText(canvas, "Moogle points  " + status[7] + "      Sleights  " + status[8], x, y, s, -1, pw);
             if (statusCount < 13) return;
             java.util.List<String> sleights = KhNames.learnedSleights(status[9], status[10], status[11], status[12]);
             if (sleights.isEmpty()) return;
-            // Names in columns under the count, small text; whatever does not fit is summarised.
-            int ss = Math.max(1, s - 2);
-            y += line * 1.05f;
-            float colW = (pw - u * 1.2f) / 3, rowH = 13 * ss, bottom = p.bottom - u * 0.4f;
-            int rows = Math.max(1, (int) ((bottom - y) / rowH)), cap = rows * 3;
+            // Sleight names in columns below; whatever does not fit is summarised in the last cell.
+            y += line * 1.1f;
+            fill.setColor(art != null ? art.panelColour(0xA) : 0xFF101425);
+            canvas.drawRect(x, y - line * 0.25f, right, y - line * 0.25f + Math.max(2f, s / 2f), fill);
+            int ss = Math.max(2, s - 1);
+            float rowH = 12.5f * ss, bottom = p.bottom - u * 0.25f;
+            int cols = 3, rows = Math.max(1, (int) ((bottom - y) / rowH));
+            if (rows * cols < sleights.size()) {
+                ss = Math.max(2, s - 2);
+                rowH = 12.5f * ss;
+                rows = Math.max(1, (int) ((bottom - y) / rowH));
+                cols = 4;
+            }
+            float colW = (right - x) / cols;
+            int cap = rows * cols;
             for (int i = 0; i < sleights.size() && i < cap; i++) {
                 String label = (i == cap - 1 && sleights.size() > cap) ? "+" + (sleights.size() - cap + 1) + " more" : sleights.get(i);
-                gameText(canvas, label, x + (i / rows) * colW, y + (i % rows) * rowH, ss, -1, colW - u * 0.2f,
+                gameText(canvas, label, x + (i / rows) * colW, y + (i % rows) * rowH, ss, -1, colW - u * 0.15f,
                     0xFFCFE3FF, TEXT_SHADOW, 255);
             }
         }

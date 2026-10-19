@@ -28,7 +28,9 @@ every game address it relies on and how each was verified, and what is left.
   to select it** (the panel presses L/R until the game's selection lands on it). **Tap the selected
   card to use it** (A).
 - **MAP**: the current floor drawn the way the game's map screen draws it (room shapes from doors,
-  unvisited rooms dimmed, event rooms, the current room pulsing), with the world and floor.
+  unvisited rooms dimmed, event rooms, the current room pulsing, animated door markers for closed
+  doors and hall exits), with the world, the floor and the current room's name. **Tap a room** to
+  see its name and state.
 - **PAD**: touch GBA buttons (sent through the normal `keybinds.ini` path) and a RAM watch list read
   from `bottom_screen_watches.txt`.
 - **MENU** opens the in-game settings menu.
@@ -151,6 +153,7 @@ Found by combining three sources:
 | `PlayerProgression` (maxHp +0, cp +2, exp +8, nextExp +0xC, level +0x10, learnedStocks +0x14, moogle +0x7C) | `gGameState + 0xF8` | decomp assert + live dumps |
 | `gMapFloorState` (world +4, current room +6, rooms[32] ×16 bytes @+0x1C) | `0x0203C590` | `CopyMapProgress` |
 | `gBtlWork` pointer → Sora's `BtlObj` at +0x7C (hp +0x2C, maxHp +0x2E) | `0x02039B84` | live dumps (HP 80→64) |
+| Riku's battle cards: `sRikuSelectedCard` (same layout; chosen by the Riku flag) | `0x02034AAC` | literal counts in Riku's battle code (63 uses; its request words `0x02034AA4` / `AA8` come first in the file) |
 | **Battle cards**: `sSoraSelectedCard` → `CardDisplayArgs` (pool +0x38 = `&work->cardDisplays[list]`, index +0x44, list +0x46) → `CardBattleWork` (slots +0x44, slotCounts +0xA8, cardsLeft +0xB0, listIndex +0xB8, stockCount +0xB9); `CardSlot` 0xC bytes (id u32, pad +6, stocked +7, used +8, removed +0xA); Reload = 0xFFFE; friend cards follow Reload | `0x02034A98` | live dumps |
 | Battle-mode words (via `khcom_is_battle_active`) | `0x03007488` / `0x03007494` | upstream widescreen adapter |
 
@@ -159,8 +162,11 @@ pointer before `CreateCardBattleState` allocates and zeroes the state, so the li
 it. This is a bug in the game itself, and it is why the first battle view showed nothing.
 `cursors[]` also stays 0; the selection is `CardDisplayArgs.index`.
 
-**Pickups.** `ObtainCard` writes each new card into the first empty collection slot at pickup time.
-Battle rewards are collected in the field after the battle, not during it.
+**Pickups.** `ObtainCard` adds each new card to the collection at pickup time. Battle rewards are
+collected in the field after the battle, not during it. Battles also take deck cards out of the
+collection and put them back, so the tracker keeps the highest count ever seen for each card (ID +
+premium). Only a count above that counts as a new card, which avoids false "new cards" when cards
+come back.
 
 ### ROM
 
@@ -173,6 +179,11 @@ Battle rewards are collected in the field after the battle, not during it.
 | Deck panels (tiles, map) 1/2/3 · `gDeckMenuPalettes[15]` | `0x09406F78/0x09519AB8`, `0x09407B78/0x0951A2B8`, `0x0940B998/0x0951AAB8` · `0x09614118` |
 | `gMapFloorDefs` (12 bytes: entry, exit, links* +4, eventDoors* +8) Sora · Riku | `0x0984C868` · `0x0984CBD0` |
 | Map room tiles (18 shapes × 32×32) · room palettes · map BG palettes | `0x0976B340` · `0x0984A0F8` · `0x09849F78` |
+| Map door markers: closed-door frames / sheet · hall-door frames / sheet (tile data at sheet + 248) | `0x09EF654C` / `0x0976E3DC` · `0x09EF64FC` / `0x0976DDE4` |
+
+Names (in `KhNames.java`, generated from the decomp): room names in `gRoomNames` order (indexed by
+`MapFloorRoom.nameId`), and sleights in `LearnedStock` order (bits 0–30 of `learnedStocks`, then
+`learnedStocks2` from bit 0).
 
 ---
 
@@ -223,6 +234,8 @@ pid after any restart.
 | 0.11 | Category borders for friend cards; shorter battle name bar; UTF-16 deck name |
 | 0.12 | Sora's status strip and status card |
 | 0.13 | Start no longer opens the conversation log; BACK opens the settings menu |
+| 0.14 | Riku's battle cards; map door markers, room names and tap-a-room; sleight names in the status card |
+| 0.15 | New cards no longer counts cards returning after a battle; compact status card so sleight names fit |
 
 Git: parent branch `android-thor-port`; submodule branches `gbarecomp/android-companion` and
 `external/gba-improvements/android-macos-host`. Nothing is pushed.
@@ -231,8 +244,6 @@ Git: parent branch `android-thor-port`; submodule branches `gbarecomp/android-co
 
 ## 7. Next
 
-- Riku's story: the battle list falls back to `gCardBattleState->rikuWork`. It needs Riku's own
-  selected-card static, found the same way as Sora's.
-- Map: door overlays (closed and hall-door sprites) and room names (`nameId`).
-- Sleight names for the status card (learned-stock bits → names from the decomp).
+- Riku's battle list (`0x02034AAC`) is found from code only; check it in Riku's story with a live
+  dump, as Sora's was.
 - Upstream the generic engine changes (companion hook, stick, link fixes).
