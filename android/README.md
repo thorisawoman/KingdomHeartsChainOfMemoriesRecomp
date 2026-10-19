@@ -173,7 +173,8 @@ it. This is a bug in the game itself, and it is why the first battle view showed
 collected in the field after the battle, not during it. Battles also take deck cards out of the
 collection and put them back, so the tracker keeps the highest count ever seen for each card (ID +
 premium). Only a count above that counts as a new card, which avoids false "new cards" when cards
-come back.
+come back. Loading a save changes the whole collection at once, so a scan with more than 6 gains
+resets the baseline instead of reporting them.
 
 ### ROM
 
@@ -244,6 +245,7 @@ pid after any restart.
 | 0.14 | Riku's battle cards; map door markers, room names and tap-a-room; sleight names in the status card |
 | 0.15 | New cards no longer counts cards returning after a battle; compact status card so sleight names fit |
 | 0.16 | **In-game saves work**: save type SRAM 32 KB (was EEPROM, so nothing was ever written) |
+| 0.17 | New cards ignores the collection swap when a save loads |
 
 Git: parent branch `android-thor-port`; submodule branches `gbarecomp/android-companion` and
 `external/gba-improvements/android-macos-host`. Nothing is pushed.

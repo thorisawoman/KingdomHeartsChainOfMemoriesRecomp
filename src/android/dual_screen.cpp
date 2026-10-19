@@ -143,6 +143,7 @@ constexpr uint16_t kCollectionEmpty = 0xFFF;
 constexpr int kMaxPickups = 16;
 constexpr uint32_t kPickupEvery = 6;
 constexpr int kCardKeys = 2048;                         // (ID & 0xFFF) + 1024 if premium
+constexpr int kLoadJump = 6;                            // more new cards than this in one scan = load
 
 struct PickupTracker {
     bool armed = false;
@@ -166,7 +167,18 @@ void track_pickups(PickupTracker& p) {
         const int k = card_key(e);
         if (k >= 0) ++p.now[k];
     }
-    if (!p.armed) {
+    int total = 0, gained = 0;
+    for (int k = 0; k < kCardKeys; ++k) {
+        total += p.now[k];
+        if (p.now[k] > p.most[k]) gained += p.now[k] - p.most[k];
+    }
+    if (total == 0) {                                    // title screen / no game in memory yet
+        p.armed = false;
+        return;
+    }
+    // Loading a save or starting a game swaps the whole collection in one frame; real pickups come
+    // one to a few at a time. A big jump is a new baseline, not a list of new cards.
+    if (!p.armed || gained > kLoadJump) {
         p.most = p.now;
         p.armed = true;
         return;
