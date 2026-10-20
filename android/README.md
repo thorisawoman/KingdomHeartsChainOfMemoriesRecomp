@@ -221,7 +221,37 @@ adb exec-out screencap -p -d 4630946441858561667 > top.png
 ```
 
 The display IDs are the Thor's physical IDs; get them from `dumpsys SurfaceFlinger --display-id`.
-The game log is at `files/android-runtime.log` (`run-as … cat`).
+The game log is at `files/android-runtime.log` (`run-as … cat`). Android restarts the app right
+after a crash, so the crashed session's log is kept as `files/android-runtime.log.prev` (since
+0.20). Each missed PC (code the recompiler didn't translate, run by the interpreter instead) is
+named once in the log. The crash itself is in `adb logcat -b crash -d`.
+
+**Interpreter runaway (fixed in 0.20).** The Wonderland boss fight sped up and then crashed with
+SIGABRT in `runtime_bridge_interpret`. A dispatch miss is interpreted until it returns to the top
+frame of the call-return stack. agbcc's huge functions (e.g. `0x08020BE0`, a 24 KB switch) use
+`bl` as a long jump, which pushes a frame that is never returned to. When the miss happened under
+one of those, the bridge never saw its stop address and interpreted the game loop with no frame
+pacing (the speed-up) until its 200M-instruction cap aborted. The bridge now accepts a return to
+any deeper frame, as `runtime_call_should_return` does for native code, and after 8M instructions
+without returning it hands control back to native code at the next static entry instead of
+aborting (gbarecomp `runtime_arm_default_aborts.cpp`).
+
+**Freeze after the 0.20 fix (fixed in 0.21).** A watcher on the observe port (below) caught it:
+frames kept coming, the picture stopped, and the guest sat at BIOS `0x368` with VBlank pending
+(`IF=1`, `IE=0x2001`) but `IME=0`. The interpreter had executed IntrWait's `HALTCNT` write without
+stopping, run on into the flag check (which clears IME), and the stall fallback then healed into
+native code there, still halted. The runtime only woke a halted CPU for an IRQ it could take, so it
+never woke. Fixes: HALT now ends on any `IE & IF` (as on hardware, regardless of IME/CPSR.I), the
+bridge idles on HALT, and the stall fallback only heals into cart/RAM code in the entry mode
+(`runtime_bus_bridge.cpp`, `runtime_arm_default_aborts.cpp`). The frozen savestate unfreezes.
+
+**Game watcher.** `files/debug-args.txt` containing `--tcp-observe 19892` (written with
+`run-as`, survives updates) opens the engine's observe-mode debug port. With `adb forward
+tcp:19892 tcp:19892`, `frame`, `run_status` (guest PC), `read_io`, `read_iwram` and
+`savestate_save {"path":...}` work while the game runs, even when it's wedged. The watcher script
+used for 0.21 polls these every second, screenshots the top screen, keeps rolling savestates, and
+flags freezes (no frame progress, or an unchanged picture) and speed-ups (> 90 fps). A savestate
+pulled from the device replays on the Mac with `KHCOM_SAVESTATE_LOAD`.
 
 A small recorder script was used to poll the battle-mode word and save RAM dumps plus screenshots
 whenever a battle was active. That's how the battle work and the `gCardBattleState` bug were found.
@@ -251,6 +281,8 @@ pid after any restart.
 | 0.17 | New cards ignores the collection swap when a save loads |
 | 0.18 | Title logo on the bottom screen until play starts; touch pad / PAD view / MENU removed; R3 switches DECK/MAP |
 | 0.19 | Castle Oblivion floor view in the halls between floors (worlds, cleared floors, current hall) |
+| 0.20 | **Boss-fight crash fixed** (interpreter runaway after a long-jump `bl`, see §5); crashed session's log kept |
+| 0.21 | **Boss-fight freeze fixed**: HALT wakes on IE & IF like hardware; the interpreter idles on HALT and never heals into the BIOS (see §5) |
 
 Source: <https://github.com/thorisawoman/KingdomHeartsChainOfMemoriesRecomp> (branch
 `android-thor-port`, a fork of rafadono/KingdomHeartsChainOfMemoriesRecomp). The changed
